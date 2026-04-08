@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Generate Depth Map · WhisperDrop</title>
+<style>
+  body {
+    background: #0e0e14;
+    color: #e5e5e5;
+    font-family: system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    margin: 0;
+    padding: 40px 20px;
+    gap: 20px;
+  }
+  h1 { font-weight: 300; letter-spacing: 0.02em; margin: 0; }
+  p { color: #a3a3b3; max-width: 560px; text-align: center; line-height: 1.6; margin: 0; }
+  .status {
+    font-family: 'SF Mono', monospace;
+    font-size: 0.85rem;
+    color: #c9a96a;
+    margin-top: 10px;
+  }
+  .bar {
+    width: 280px;
+    height: 3px;
+    background: #2a2a3a;
+    border-radius: 999px;
+    overflow: hidden;
+  }
+  .bar-fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #5e8aff, #c9a96a);
+    transition: width 0.4s ease;
+  }
+  canvas {
+    max-width: 480px;
+    border: 1px solid #2a2a3a;
+    border-radius: 8px;
+    margin-top: 16px;
+  }
+  button {
+    margin-top: 16px;
+    padding: 12px 24px;
+    background: #c9a96a;
+    color: #0e0e14;
+    border: none;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    font-weight: 600;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  button:hover { opacity: 0.9; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+</style>
+</head>
+<body>
+<h1>Generate Depth Map</h1>
+<p>
+  このツールは <code>hero.png</code> に対して AI 深度推定を実行し、
+  <code>hero-depth.png</code> をダウンロードします。
+  ダウンロード後、サイトのルートフォルダに置いてコミットしてください。
+  以降、本番サイトは AI モデルを読み込まずにこの画像を使用します。
+</p>
+<div class="status" id="status">Initializing...</div>
+<div class="bar"><div class="bar-fill" id="bar"></div></div>
+<canvas id="preview"></canvas>
+<button id="download-btn" disabled>Download hero-depth.png</button>
+
+<script type="module">
+import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.2';
+env.allowLocalModels = false;
+env.useBrowserCache = true;
+
+const status = document.getElementById('status');
+const bar = document.getElementById('bar');
+const preview = document.getElementById('preview');
+const btn = document.getElementById('download-btn');
+
+function setStatus(text, pct) {
+  status.textContent = text;
+  if (pct !== undefined) bar.style.width = pct + '%';
+}
+
+let depthBlob = null;
+
+async function run() {
+  try {
+    setStatus('Loading Depth-Anything-V2 model...', 5);
+    let estimator;
+    try {
+      estimator = await pipeline(
+        'depth-estimation',
+        'onnx-community/depth-anything-v2-small',
+        {
+          device: 'webgpu',
+          progress_callback: d => {
+            if (d.status === 'progress' && d.progress !== undefined) {
+              setStatus(`Downloading model ${d.progress.toFixed(0)}%`, 5 + d.progress * 0.4);
+            }
+          }
+        }
+      );
+    } catch (e) {
+      estimator = await pipeline(
+        'depth-estimation',
+        'onnx-community/depth-anything-v2-small',
+        {
+          progress_callback: d => {
+            if (d.status === 'progress' && d.progress !== undefined) {
+              setStatus(`Downloading model (WASM) ${d.progress.toFixed(0)}%`, 5 + d.progress * 0.4);
+            }
+          }
+        }
+      );
+    }
+
+    setStatus('Loading hero.png...', 50);
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.src = '../hero.png';
+    await new Promise((res, rej) => { img.onload = res; img.onerror = rej; });
+
+    setStatus('Running depth estimation...', 60);
+    // Use the original image URL directly
+    const output = await estimator('../hero.png');
+    const raw = output.depth; // RawImage { data: Uint8Array, width, height }
+
+    setStatus('Rendering depth map...', 90);
+
+    // Draw the depth map at the ORIGINAL image size (keeps aspect ratio of hero.png)
+    // We upscale bilinearly to match hero.png dims so the main site can sample
+    // directly with its own resizing logic.
+    const TW = img.width;
+    const TH = img.height;
+    const out = new Uint8ClampedArray(TW * TH * 4);
+
+    const srcW = raw.width, srcH = raw.height;
+    const src = raw.data;
+    for (let y = 0; y < TH; y++) {
+      const sy = (y / TH) * srcH;
+      const y0 = Math.floor(sy);
+      const y1 = Math.min(y0 + 1, srcH - 1);
+      const fy = sy - y0;
+      for (let x = 0; x < TW; x++) {
+        const sx = (x / TW) * srcW;
+        const x0 = Math.floor(sx);
+        const x1 = Math.min(x0 + 1, srcW - 1);
+        const fx = sx - x0;
+        const a = src[y0 * srcW + x0], b = src[y0 * srcW + x1];
+        const c = src[y1 * srcW + x0], d = src[y1 * srcW + x1];
+        const top = a * (1 - fx) + b * fx;
+        const bot = c * (1 - fx) + d * fx;
+        const v = Math.round(top * (1 - fy) + bot * fy);
+        const idx = (y * TW + x) * 4;
+        out[idx] = v;
+        out[idx + 1] = v;
+        out[idx + 2] = v;
+        out[idx + 3] = 255;
+      }
+    }
+
+    preview.width = TW;
+    preview.height = TH;
+    const ctx = preview.getContext('2d');
+    const imgData = new ImageData(out, TW, TH);
+    ctx.putImageData(imgData, 0, 0);
+
+    // Save as PNG blob
+    depthBlob = await new Promise(r => preview.toBlob(r, 'image/png'));
+
+    setStatus(`READY · ${TW}×${TH} · ${(depthBlob.size / 1024).toFixed(0)} KB`, 100);
+    btn.disabled = false;
+  } catch (err) {
+    console.error(err);
+    setStatus('ERROR: ' + (err.message || err), 0);
+  }
+}
+
+btn.addEventListener('click', () => {
+  if (!depthBlob) return;
+  const url = URL.createObjectURL(depthBlob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'hero-depth.png';
+  a.click();
+  URL.revokeObjectURL(url);
+});
+
+run();
+</script>
+</body>
+</html>

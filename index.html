@@ -964,10 +964,7 @@ footer {
   <div class="footer-copy">© 2026 SakuraRinDev  ·  <span data-i18n="footerOpen">Open Source</span></div>
 </footer>
 
-<script type="module">
-import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.2';
-env.allowLocalModels = false;
-env.useBrowserCache = true;
+<script>
 
 // ─── i18n ───
 const I18N = {
@@ -1072,10 +1069,24 @@ window.addEventListener('scroll', () => {
   nav.classList.toggle('scrolled', window.scrollY > 20);
 });
 
-// ─── Parallax Hero ───
-// Settings from data.txt
-const SETTINGS = { depthStrength: 500, rotation: 9, layerCount: 32, scale: 1.07 };
+// ─── Parallax Hero (pre-baked depth — no AI at runtime) ───
+// Settings from data.txt. layerCount is adaptive per device.
+const BASE_SETTINGS = { depthStrength: 500, rotation: 9, layerCount: 32, scale: 1.07 };
 const HERO_IMAGE = 'hero.png';
+const DEPTH_IMAGE = 'hero-depth.png';
+
+// Device-adaptive quality: mobile needs far fewer layers + lower res to avoid OOM
+const isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+const isSmallScreen = window.innerWidth < 768;
+const isMobile = isTouch || isSmallScreen;
+
+const SETTINGS = {
+  ...BASE_SETTINGS,
+  // 32 × 1280×720 ≈ 118MB canvas → crashes iOS Safari
+  //  8 × 720×480  ≈ 11MB  → safe
+  layerCount: isMobile ? 8 : BASE_SETTINGS.layerCount,
+  maxRes:     isMobile ? 720 : 1280
+};
 
 const loader = document.getElementById('hero-loader');
 const loaderText = document.getElementById('loader-text');
@@ -1088,117 +1099,87 @@ function setLoader(pct, text) {
   if (text) loaderText.textContent = text;
 }
 
-let depthEstimator = null;
 let lastResult = null;
 let layerElements = [];
 let layerDepths = [];
 let animationId = null;
 
-async function loadModel() {
-  if (depthEstimator) return depthEstimator;
-  setLoader(5, 'LOADING DEPTH MODEL');
-  try {
-    depthEstimator = await pipeline(
-      'depth-estimation',
-      'onnx-community/depth-anything-v2-small',
-      {
-        device: 'webgpu',
-        progress_callback: (d) => {
-          if (d.status === 'progress' && d.progress !== undefined) {
-            setLoader(5 + d.progress * 0.5, 'DOWNLOADING · ' + d.progress.toFixed(0) + '%');
-          }
-        }
-      }
-    );
-  } catch (e) {
-    setLoader(10, 'WASM FALLBACK');
-    depthEstimator = await pipeline(
-      'depth-estimation',
-      'onnx-community/depth-anything-v2-small',
-      {
-        progress_callback: (d) => {
-          if (d.status === 'progress' && d.progress !== undefined) {
-            setLoader(10 + d.progress * 0.45, 'DOWNLOADING · ' + d.progress.toFixed(0) + '%');
-          }
-        }
-      }
-    );
-  }
-  return depthEstimator;
-}
-
-function resizeDepth(rawDepth, targetW, targetH) {
-  const srcW = rawDepth.width, srcH = rawDepth.height;
-  const src = rawDepth.data;
-  const out = new Uint8Array(targetW * targetH);
-  for (let y = 0; y < targetH; y++) {
-    const sy = (y / targetH) * srcH;
-    const y0 = Math.floor(sy);
-    const y1 = Math.min(y0 + 1, srcH - 1);
-    const fy = sy - y0;
-    for (let x = 0; x < targetW; x++) {
-      const sx = (x / targetW) * srcW;
-      const x0 = Math.floor(sx);
-      const x1 = Math.min(x0 + 1, srcW - 1);
-      const fx = sx - x0;
-      const a = src[y0 * srcW + x0], b = src[y0 * srcW + x1];
-      const c = src[y1 * srcW + x0], d = src[y1 * srcW + x1];
-      const top = a * (1 - fx) + b * fx;
-      const bot = c * (1 - fx) + d * fx;
-      out[y * targetW + x] = Math.round(top * (1 - fy) + bot * fy);
-    }
-  }
-  let mn = 255, mx = 0;
-  for (let i = 0; i < out.length; i++) { if (out[i] < mn) mn = out[i]; if (out[i] > mx) mx = out[i]; }
-  const rng = mx - mn || 1;
-  for (let i = 0; i < out.length; i++) out[i] = Math.round(((out[i] - mn) / rng) * 255);
-  return out;
+// Load an image as a promise
+function loadImg(src) {
+  return new Promise((res, rej) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => res(img);
+    img.onerror = rej;
+    img.src = src;
+  });
 }
 
 async function initHero() {
   try {
-    await loadModel();
-    setLoader(58, 'PREPARING IMAGE');
+    setLoader(10, 'LOADING IMAGES');
+    const [heroImg, depthImg] = await Promise.all([
+      loadImg(HERO_IMAGE),
+      loadImg(DEPTH_IMAGE)
+    ]);
 
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.src = HERO_IMAGE;
-    await new Promise((res, rej) => { img.onload = res; img.onerror = rej; });
-
-    const MAX = 1280;
-    let w = img.width, h = img.height;
+    setLoader(45, 'PREPARING CANVAS');
+    const MAX = SETTINGS.maxRes;
+    let w = heroImg.width, h = heroImg.height;
     if (w > MAX || h > MAX) {
       const r = Math.min(MAX / w, MAX / h);
       w = Math.round(w * r);
       h = Math.round(h * r);
     }
 
+    // Draw hero into canvas at target size
     const srcCanvas = document.createElement('canvas');
     srcCanvas.width = w; srcCanvas.height = h;
-    srcCanvas.getContext('2d').drawImage(img, 0, 0, w, h);
+    srcCanvas.getContext('2d').drawImage(heroImg, 0, 0, w, h);
     const srcData = srcCanvas.getContext('2d').getImageData(0, 0, w, h);
 
-    setLoader(68, 'ESTIMATING DEPTH');
-    const output = await depthEstimator(HERO_IMAGE);
-    const depthData = resizeDepth(output.depth, w, h);
+    // Draw depth map at same target size, extract as 1-channel Uint8Array
+    setLoader(65, 'READING DEPTH MAP');
+    const dCanvas = document.createElement('canvas');
+    dCanvas.width = w; dCanvas.height = h;
+    dCanvas.getContext('2d').drawImage(depthImg, 0, 0, w, h);
+    const dImgData = dCanvas.getContext('2d').getImageData(0, 0, w, h);
+    const depthData = new Uint8Array(w * h);
+    // Use red channel (depth map is grayscale)
+    for (let p = 0; p < w * h; p++) {
+      depthData[p] = dImgData.data[p * 4];
+    }
+    // Normalize full 0-255 range
+    let mn = 255, mx = 0;
+    for (let i = 0; i < depthData.length; i++) {
+      if (depthData[i] < mn) mn = depthData[i];
+      if (depthData[i] > mx) mx = depthData[i];
+    }
+    const rng = mx - mn || 1;
+    for (let i = 0; i < depthData.length; i++) {
+      depthData[i] = Math.round(((depthData[i] - mn) / rng) * 255);
+    }
 
-    setLoader(90, 'COMPOSING LAYERS');
+    setLoader(85, 'COMPOSING LAYERS');
     lastResult = { srcData, depthData, w, h };
     buildParallax();
 
     setLoader(100, 'READY');
-    await new Promise(r => setTimeout(r, 400));
+    await new Promise(r => setTimeout(r, 300));
     loader.classList.add('done');
     heroContent.classList.add('visible');
 
     if (!animationId) startAnimation();
   } catch (err) {
-    console.error(err);
-    loaderText.textContent = 'ERROR · ' + (err.message || err);
-    setTimeout(() => {
-      loader.classList.add('done');
-      heroContent.classList.add('visible');
-    }, 1500);
+    console.error('Hero init failed:', err);
+    // Fallback: show hero.png as static background, skip parallax
+    parallaxContainer.innerHTML = '';
+    const fallback = document.createElement('img');
+    fallback.src = HERO_IMAGE;
+    fallback.style.cssText = 'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);min-width:100%;min-height:100%;object-fit:cover;';
+    parallaxContainer.appendChild(fallback);
+    loader.classList.add('done');
+    heroContent.classList.add('visible');
   }
 }
 
@@ -1292,9 +1273,7 @@ document.addEventListener('mousemove', e => {
   targetY = Math.max(0, Math.min(1, targetY));
 });
 
-// Gyro (mobile)
-const isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
-
+// Gyro (mobile) — isTouch already declared above
 function enableGyro() {
   window.addEventListener('deviceorientation', e => {
     // gamma: left/right tilt (-90..90), beta: front/back tilt (-180..180)
