@@ -1,0 +1,11 @@
+{
+
+  "depthStrength": 500,
+
+  "rotation": 9,
+
+  "layerCount": 32,
+
+  "scale": 1.07
+
+}

@@ -1,0 +1,908 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>2.5D Parallax HQ — AI Depth Estimation</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Sora:wght@300;400;600;700&family=Noto+Sans+JP:wght@300;400;700&display=swap');
+
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --bg: #0a0a0f;
+  --surface: #13131a;
+  --border: #2a2a3a;
+  --text: #e8e8f0;
+  --text-dim: #8888aa;
+  --accent: #6366f1;
+  --accent2: #a78bfa;
+  --accent-glow: rgba(99, 102, 241, 0.3);
+  --success: #22c55e;
+}
+
+html, body {
+  width: 100%; height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Sora', 'Noto Sans JP', sans-serif;
+  overflow: hidden;
+}
+
+/* ── UPLOAD ── */
+#upload-screen {
+  position: fixed; inset: 0;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  z-index: 100;
+  background: var(--bg);
+  transition: opacity 0.6s ease, visibility 0.6s ease;
+}
+#upload-screen.hidden { opacity: 0; visibility: hidden; pointer-events: none; }
+
+.upload-title {
+  font-size: clamp(1.8rem, 4vw, 3rem);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin-bottom: 0.3em;
+  background: linear-gradient(135deg, #6366f1, #a78bfa, #f472b6);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.upload-badge {
+  display: inline-block;
+  font-size: 0.65rem;
+  letter-spacing: 0.15em;
+  color: var(--accent2);
+  background: rgba(167,139,250,0.1);
+  border: 1px solid rgba(167,139,250,0.3);
+  padding: 4px 10px;
+  border-radius: 999px;
+  margin-bottom: 1rem;
+  text-transform: uppercase;
+}
+.upload-sub {
+  color: var(--text-dim);
+  font-size: 0.95rem;
+  font-weight: 300;
+  margin-bottom: 2.5rem;
+  text-align: center;
+  line-height: 1.6;
+}
+
+.drop-zone {
+  width: min(480px, 90vw);
+  aspect-ratio: 16/10;
+  border: 2px dashed var(--border);
+  border-radius: 20px;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  cursor: pointer;
+  transition: border-color 0.3s, background 0.3s, transform 0.3s;
+  background: var(--surface);
+  position: relative;
+  overflow: hidden;
+}
+.drop-zone::before {
+  content: '';
+  position: absolute; inset: 0;
+  background: radial-gradient(ellipse at center, var(--accent-glow), transparent 70%);
+  opacity: 0;
+  transition: opacity 0.4s;
+}
+.drop-zone:hover, .drop-zone.dragover { border-color: var(--accent); transform: scale(1.02); }
+.drop-zone:hover::before, .drop-zone.dragover::before { opacity: 1; }
+.drop-zone svg {
+  width: 48px; height: 48px;
+  stroke: var(--text-dim);
+  margin-bottom: 1rem;
+  transition: stroke 0.3s;
+}
+.drop-zone:hover svg { stroke: var(--accent); }
+.drop-zone span { color: var(--text-dim); font-size: 0.9rem; position: relative; }
+#file-input { display: none; }
+
+.model-info {
+  margin-top: 1.5rem;
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  opacity: 0.6;
+  text-align: center;
+  max-width: 420px;
+  line-height: 1.5;
+}
+
+/* ── PROCESSING ── */
+#processing-screen {
+  position: fixed; inset: 0;
+  display: none; flex-direction: column;
+  align-items: center; justify-content: center;
+  z-index: 90;
+  background: var(--bg);
+}
+#processing-screen.active { display: flex; }
+
+.process-spinner {
+  width: 64px; height: 64px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-right-color: var(--accent2);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin-bottom: 1.5rem;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.process-label {
+  font-size: 1rem;
+  color: var(--text);
+  font-weight: 400;
+}
+.process-step {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  margin-top: 0.5rem;
+  opacity: 0.8;
+  font-family: 'SF Mono', 'Monaco', monospace;
+}
+.progress-bar {
+  width: 280px;
+  height: 3px;
+  background: var(--border);
+  border-radius: 999px;
+  margin-top: 1.2rem;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, var(--accent), var(--accent2));
+  border-radius: 999px;
+  transition: width 0.4s ease;
+}
+
+/* ── VIEWER ── */
+#viewer {
+  position: fixed; inset: 0;
+  display: none;
+  align-items: center; justify-content: center;
+  perspective: 1400px;
+  overflow: hidden;
+  background: #000;
+}
+#viewer.active { display: flex; }
+
+.parallax-container {
+  position: relative;
+  transform-style: preserve-3d;
+  transition: transform 0.1s ease-out;
+  transform-origin: 50% 50% 0;
+}
+
+.parallax-layer {
+  position: absolute;
+  top: 50%; left: 50%;
+  width: 100%; height: 100%;
+  will-change: transform;
+  backface-visibility: hidden;
+  transform-origin: 50% 50% 0;
+}
+.parallax-layer canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* ── CONTROLS (vertical, top-right, minimal) ── */
+.controls {
+  position: fixed;
+  top: 20px; right: 20px;
+  z-index: 200;
+  display: none;
+  flex-direction: column;
+  gap: 10px;
+  background: rgba(13,13,18,0.72);
+  backdrop-filter: blur(20px) saturate(1.2);
+  -webkit-backdrop-filter: blur(20px) saturate(1.2);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 14px;
+  padding: 14px 14px 12px;
+  width: 200px;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+}
+.controls.active { display: flex; }
+
+.ctrl-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ctrl-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.controls label {
+  font-size: 0.64rem;
+  color: var(--text-dim);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-weight: 500;
+}
+.ctrl-value {
+  font-size: 0.68rem;
+  color: var(--text);
+  font-family: 'SF Mono', 'Monaco', monospace;
+  font-variant-numeric: tabular-nums;
+  min-width: 32px;
+  text-align: right;
+}
+.controls input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+  height: 2px;
+  background: transparent;
+}
+.ctrl-sep {
+  height: 1px;
+  background: rgba(255,255,255,0.05);
+  margin: 4px 0;
+}
+.ctrl-buttons {
+  display: flex;
+  gap: 6px;
+  margin-top: 2px;
+}
+.controls button {
+  flex: 1;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.06);
+  color: var(--text);
+  padding: 7px 8px;
+  border-radius: 8px;
+  font-size: 0.68rem;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.18s;
+  letter-spacing: 0.02em;
+}
+.controls button:hover {
+  background: rgba(99,102,241,0.2);
+  border-color: rgba(99,102,241,0.4);
+  color: #fff;
+}
+.controls button.copied {
+  background: rgba(34,197,94,0.2);
+  border-color: rgba(34,197,94,0.5);
+  color: #86efac;
+}
+
+/* ── DEPTH PREVIEW (moved to bottom-right to avoid control panel) ── */
+.depth-preview {
+  position: fixed;
+  bottom: 20px; right: 20px;
+  z-index: 200;
+  display: none;
+  flex-direction: column;
+  gap: 6px;
+}
+.depth-preview.active { display: flex; }
+.depth-preview canvas {
+  width: 180px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+}
+.depth-preview span {
+  font-size: 0.65rem;
+  color: var(--text-dim);
+  text-align: center;
+  letter-spacing: 0.08em;
+}
+
+/* ── MODE BADGE ── */
+.mode-badge {
+  position: fixed;
+  bottom: 20px; left: 20px;
+  z-index: 200;
+  display: none;
+  font-size: 0.7rem;
+  color: var(--accent2);
+  background: rgba(167,139,250,0.1);
+  border: 1px solid rgba(167,139,250,0.3);
+  padding: 6px 12px;
+  border-radius: 999px;
+  backdrop-filter: blur(8px);
+  letter-spacing: 0.05em;
+}
+.mode-badge.active { display: block; }
+.mode-badge .dot {
+  display: inline-block;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--success);
+  margin-right: 6px;
+  animation: pulse 2s infinite;
+}
+@keyframes pulse {
+  0%,100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.error-toast {
+  position: fixed;
+  bottom: 100px; left: 50%;
+  transform: translateX(-50%);
+  background: #2a1a1a;
+  border: 1px solid #ef4444;
+  color: #fca5a5;
+  padding: 12px 20px;
+  border-radius: 10px;
+  font-size: 0.85rem;
+  z-index: 300;
+  display: none;
+  max-width: 90vw;
+}
+.error-toast.active { display: block; }
+</style>
+</head>
+<body>
+
+<!-- UPLOAD -->
+<div id="upload-screen">
+  <div class="upload-badge">AI Depth · DPT Model</div>
+  <h1 class="upload-title">2.5D Parallax HQ</h1>
+  <p class="upload-sub">
+    Transformers.js + DPT深度推定モデルを使用した高精度版<br>
+    ニューラルネットワークで真のピクセル単位の深度を推定し、滑らかなパララックスを生成
+  </p>
+  <div class="drop-zone" id="drop-zone">
+    <svg viewBox="0 0 24 24" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+      <polyline points="17 8 12 3 7 8"/>
+      <line x1="12" y1="3" x2="12" y2="15"/>
+    </svg>
+    <span>画像をドラッグ＆ドロップ、またはクリック</span>
+  </div>
+  <input type="file" id="file-input" accept="image/*">
+  <p class="model-info">
+    ※ 初回のみモデル（約50MB）をCDNからダウンロードします。<br>
+    処理はすべてブラウザ内で完結し、画像は外部送信されません。
+  </p>
+</div>
+
+<!-- PROCESSING -->
+<div id="processing-screen">
+  <div class="process-spinner"></div>
+  <div class="process-label" id="process-label">AI深度推定を実行中</div>
+  <div class="process-step" id="process-step">初期化中...</div>
+  <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+</div>
+
+<!-- VIEWER -->
+<div id="viewer">
+  <div class="parallax-container" id="parallax-container"></div>
+</div>
+
+<!-- CONTROLS -->
+<div class="controls" id="controls">
+  <div class="ctrl-group">
+    <div class="ctrl-row">
+      <label>深度強度</label>
+      <span class="ctrl-value" id="val-depth">80</span>
+    </div>
+    <input type="range" id="depth-strength" min="10" max="500" value="80">
+  </div>
+
+  <div class="ctrl-group">
+    <div class="ctrl-row">
+      <label>回転</label>
+      <span class="ctrl-value" id="val-rot">7°</span>
+    </div>
+    <input type="range" id="rot-amount" min="0" max="30" value="7">
+  </div>
+
+  <div class="ctrl-group">
+    <div class="ctrl-row">
+      <label>レイヤー数</label>
+      <span class="ctrl-value" id="val-layers">8</span>
+    </div>
+    <input type="range" id="layer-count" min="3" max="32" value="8">
+  </div>
+
+  <div class="ctrl-group">
+    <div class="ctrl-row">
+      <label>スケール</label>
+      <span class="ctrl-value" id="val-scale">118%</span>
+    </div>
+    <input type="range" id="scale-range" min="100" max="160" value="118">
+  </div>
+
+  <div class="ctrl-sep"></div>
+
+  <div class="ctrl-buttons">
+    <button id="btn-copy">設定コピー</button>
+    <button id="toggle-mode">ジャイロ</button>
+  </div>
+  <div class="ctrl-buttons">
+    <button id="btn-reset">リセット</button>
+  </div>
+</div>
+
+<!-- DEPTH PREVIEW -->
+<div class="depth-preview" id="depth-preview">
+  <canvas id="depth-canvas"></canvas>
+  <span>DPT DEPTH MAP</span>
+</div>
+
+<!-- MODE BADGE -->
+<div class="mode-badge" id="mode-badge"><span class="dot"></span>マウス追従</div>
+
+<!-- ERROR TOAST -->
+<div class="error-toast" id="error-toast"></div>
+
+<script type="module">
+import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.2';
+
+// Transformers.js config
+env.allowLocalModels = false;
+env.useBrowserCache = true;
+
+// ─── DOM ───
+const uploadScreen = document.getElementById('upload-screen');
+const processingScreen = document.getElementById('processing-screen');
+const processLabel = document.getElementById('process-label');
+const processStep = document.getElementById('process-step');
+const progressFill = document.getElementById('progress-fill');
+const viewer = document.getElementById('viewer');
+const controls = document.getElementById('controls');
+const depthPreview = document.getElementById('depth-preview');
+const modeBadge = document.getElementById('mode-badge');
+const dropZone = document.getElementById('drop-zone');
+const fileInput = document.getElementById('file-input');
+const parallaxContainer = document.getElementById('parallax-container');
+const depthCanvas = document.getElementById('depth-canvas');
+const depthStrengthInput = document.getElementById('depth-strength');
+const rotAmountInput = document.getElementById('rot-amount');
+const layerCountInput = document.getElementById('layer-count');
+const scaleRange = document.getElementById('scale-range');
+const toggleModeBtn = document.getElementById('toggle-mode');
+const btnReset = document.getElementById('btn-reset');
+const btnCopy = document.getElementById('btn-copy');
+const errorToast = document.getElementById('error-toast');
+
+const valDepth = document.getElementById('val-depth');
+const valRot = document.getElementById('val-rot');
+const valLayers = document.getElementById('val-layers');
+const valScale = document.getElementById('val-scale');
+
+let useGyro = false;
+let currentStrength = 80;
+let currentRot = 7;
+let currentScale = 1.18;
+let currentLayerCount = 8;
+let depthEstimator = null;
+let lastResult = null; // { srcData, depthData, w, h }
+let animationId = null;
+
+// ─── FILE HANDLING ───
+dropZone.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', e => { if (e.target.files[0]) handleFile(e.target.files[0]); });
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('dragover');
+  if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
+});
+
+function handleFile(file) {
+  if (!file.type.startsWith('image/')) return;
+  const reader = new FileReader();
+  reader.onload = e => processImage(e.target.result);
+  reader.readAsDataURL(file);
+}
+
+function showError(msg) {
+  errorToast.textContent = msg;
+  errorToast.classList.add('active');
+  setTimeout(() => errorToast.classList.remove('active'), 5000);
+}
+
+function setProgress(label, step, pct) {
+  processLabel.textContent = label;
+  processStep.textContent = step;
+  progressFill.style.width = pct + '%';
+}
+
+// ─── MODEL LOADING ───
+async function loadModel() {
+  if (depthEstimator) return depthEstimator;
+  setProgress('AIモデルを読み込み中', 'Depth-Anything-V2 Small を初期化中...', 5);
+  try {
+    depthEstimator = await pipeline(
+      'depth-estimation',
+      'onnx-community/depth-anything-v2-small',
+      {
+        device: 'webgpu',
+        progress_callback: (data) => {
+          if (data.status === 'progress' && data.progress !== undefined) {
+            const pct = 5 + data.progress * 0.4;
+            setProgress('AIモデルをダウンロード中',
+              `${data.file || ''} · ${data.progress.toFixed(0)}%`, pct);
+          }
+        }
+      }
+    );
+  } catch (e1) {
+    console.warn('WebGPU failed, falling back to WASM:', e1);
+    setProgress('AIモデルを読み込み中', 'WebGPU非対応 - WASMで再試行...', 10);
+    try {
+      depthEstimator = await pipeline(
+        'depth-estimation',
+        'onnx-community/depth-anything-v2-small',
+        {
+          progress_callback: (data) => {
+            if (data.status === 'progress' && data.progress !== undefined) {
+              const pct = 10 + data.progress * 0.35;
+              setProgress('AIモデルをダウンロード中',
+                `${data.file || ''} · ${data.progress.toFixed(0)}%`, pct);
+            }
+          }
+        }
+      );
+    } catch (e2) {
+      console.warn('depth-anything-v2 failed, trying DPT:', e2);
+      depthEstimator = await pipeline(
+        'depth-estimation',
+        'Xenova/dpt-hybrid-midas',
+        {
+          progress_callback: (data) => {
+            if (data.status === 'progress' && data.progress !== undefined) {
+              const pct = 10 + data.progress * 0.35;
+              setProgress('AIモデルをダウンロード中 (fallback)',
+                `${data.file || ''} · ${data.progress.toFixed(0)}%`, pct);
+            }
+          }
+        }
+      );
+    }
+  }
+  return depthEstimator;
+}
+
+// ─── IMAGE PROCESSING ───
+async function processImage(dataUrl) {
+  uploadScreen.classList.add('hidden');
+  processingScreen.classList.add('active');
+  setProgress('初期化中', '画像を読み込んでいます', 2);
+
+  try {
+    // Load model
+    await loadModel();
+
+    setProgress('画像を準備中', 'リサイズとキャンバス化', 48);
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = dataUrl; });
+
+    // Resize for processing
+    const MAX = 1280;
+    let w = img.width, h = img.height;
+    if (w > MAX || h > MAX) {
+      const r = Math.min(MAX / w, MAX / h);
+      w = Math.round(w * r);
+      h = Math.round(h * r);
+    }
+
+    const srcCanvas = document.createElement('canvas');
+    srcCanvas.width = w; srcCanvas.height = h;
+    const srcCtx = srcCanvas.getContext('2d');
+    srcCtx.drawImage(img, 0, 0, w, h);
+    const srcData = srcCtx.getImageData(0, 0, w, h);
+
+    // Run depth estimation
+    setProgress('AI深度推定中', 'ニューラルネットワーク実行中...', 55);
+    await sleep(50);
+
+    const output = await depthEstimator(dataUrl);
+    // output: { depth: RawImage {data, width, height}, predicted_depth }
+    const rawDepth = output.depth;
+
+    setProgress('深度マップを処理中', 'アップスケールと正規化', 82);
+    await sleep(30);
+
+    // Resize depth to match source
+    const depthData = resizeDepth(rawDepth, w, h);
+
+    // Draw depth preview
+    depthCanvas.width = w; depthCanvas.height = h;
+    const dCtx = depthCanvas.getContext('2d');
+    const dImgData = dCtx.createImageData(w, h);
+    for (let i = 0; i < depthData.length; i++) {
+      const v = depthData[i];
+      // Colorized depth (viridis-ish)
+      dImgData.data[i * 4]     = v;
+      dImgData.data[i * 4 + 1] = Math.round(v * 0.6 + 40);
+      dImgData.data[i * 4 + 2] = Math.round(255 - v * 0.5);
+      dImgData.data[i * 4 + 3] = 255;
+    }
+    dCtx.putImageData(dImgData, 0, 0);
+
+    setProgress('ビューを構築中', 'マルチレイヤー合成', 94);
+    await sleep(80);
+
+    lastResult = { srcData, depthData, w, h };
+    buildParallax();
+
+    setProgress('完了', '', 100);
+    await sleep(200);
+
+    processingScreen.classList.remove('active');
+    viewer.classList.add('active');
+    controls.classList.add('active');
+    depthPreview.classList.add('active');
+    modeBadge.classList.add('active');
+    modeBadge.innerHTML = '<span class="dot"></span>マウス追従';
+
+    if (!animationId) startAnimation();
+  } catch (err) {
+    console.error(err);
+    showError('処理エラー: ' + (err.message || err));
+    processingScreen.classList.remove('active');
+    uploadScreen.classList.remove('hidden');
+  }
+}
+
+// ─── DEPTH RESIZE ───
+function resizeDepth(rawDepth, targetW, targetH) {
+  // rawDepth.data is Uint8Array of size width*height (grayscale)
+  const srcW = rawDepth.width;
+  const srcH = rawDepth.height;
+  const src = rawDepth.data;
+  const out = new Uint8Array(targetW * targetH);
+
+  // Bilinear
+  for (let y = 0; y < targetH; y++) {
+    const sy = (y / targetH) * srcH;
+    const y0 = Math.floor(sy);
+    const y1 = Math.min(y0 + 1, srcH - 1);
+    const fy = sy - y0;
+    for (let x = 0; x < targetW; x++) {
+      const sx = (x / targetW) * srcW;
+      const x0 = Math.floor(sx);
+      const x1 = Math.min(x0 + 1, srcW - 1);
+      const fx = sx - x0;
+      const a = src[y0 * srcW + x0];
+      const b = src[y0 * srcW + x1];
+      const c = src[y1 * srcW + x0];
+      const d = src[y1 * srcW + x1];
+      const top = a * (1 - fx) + b * fx;
+      const bot = c * (1 - fx) + d * fx;
+      out[y * targetW + x] = Math.round(top * (1 - fy) + bot * fy);
+    }
+  }
+
+  // Normalize (depth-anything returns inverted: near=bright, but let's ensure 0-255 full range)
+  let mn = 255, mx = 0;
+  for (let i = 0; i < out.length; i++) {
+    if (out[i] < mn) mn = out[i];
+    if (out[i] > mx) mx = out[i];
+  }
+  const rng = mx - mn || 1;
+  for (let i = 0; i < out.length; i++) {
+    out[i] = Math.round(((out[i] - mn) / rng) * 255);
+  }
+  return out;
+}
+
+// ─── PARALLAX LAYER BUILD ───
+let layerElements = [];
+let layerDepths = []; // normalized depth per layer [0..1]
+
+function buildParallax() {
+  if (!lastResult) return;
+  const { srcData, depthData, w, h } = lastResult;
+
+  // Clear old layers
+  parallaxContainer.innerHTML = '';
+  layerElements = [];
+  layerDepths = [];
+
+  const N = currentLayerCount;
+
+  // Size container
+  const viewW = window.innerWidth;
+  const viewH = window.innerHeight;
+  const fitScale = Math.max(viewW / w, viewH / h) * currentScale;
+  const displayW = w * fitScale;
+  const displayH = h * fitScale;
+
+  parallaxContainer.style.width = displayW + 'px';
+  parallaxContainer.style.height = displayH + 'px';
+
+  // For each layer, build an offscreen canvas with soft alpha based on depth band
+  for (let i = 0; i < N; i++) {
+    const center = (i + 0.5) / N;           // 0..1 (0 = far, 1 = near)
+    const half = (1 / N) * 1.2;              // slight overlap for blending
+    const lo = Math.max(0, center - half);
+    const hi = Math.min(1, center + half);
+
+    const canvas = document.createElement('canvas');
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    const imgData = ctx.createImageData(w, h);
+    const out = imgData.data;
+
+    for (let p = 0; p < w * h; p++) {
+      const dN = depthData[p] / 255; // 0=far, 1=near (depth-anything convention)
+      let alpha = 0;
+      if (dN >= lo && dN <= hi) {
+        // Smooth hann-like window
+        const t = (dN - lo) / (hi - lo); // 0..1 within band
+        alpha = Math.sin(t * Math.PI);
+      }
+      out[p * 4]     = srcData.data[p * 4];
+      out[p * 4 + 1] = srcData.data[p * 4 + 1];
+      out[p * 4 + 2] = srcData.data[p * 4 + 2];
+      out[p * 4 + 3] = Math.round(Math.min(1, alpha) * 255);
+    }
+    ctx.putImageData(imgData, 0, 0);
+
+    // Inpaint farthest layer to fill holes
+    if (i === 0) {
+      const full = ctx.createImageData(w, h);
+      for (let p = 0; p < w * h; p++) {
+        full.data[p*4]   = Math.round(srcData.data[p*4]   * 0.55);
+        full.data[p*4+1] = Math.round(srcData.data[p*4+1] * 0.55);
+        full.data[p*4+2] = Math.round(srcData.data[p*4+2] * 0.6);
+        full.data[p*4+3] = 255;
+      }
+      const bgC = document.createElement('canvas');
+      bgC.width = w; bgC.height = h;
+      bgC.getContext('2d').putImageData(full, 0, 0);
+      // Composite: darkened bg below, actual layer on top
+      ctx.globalCompositeOperation = 'destination-over';
+      ctx.drawImage(bgC, 0, 0);
+      ctx.globalCompositeOperation = 'source-over';
+    }
+
+    // Wrap in layer div (center-pinned for scale-from-center)
+    const layerDiv = document.createElement('div');
+    layerDiv.className = 'parallax-layer';
+    layerDiv.style.width = displayW + 'px';
+    layerDiv.style.height = displayH + 'px';
+    layerDiv.style.marginLeft = (-displayW / 2) + 'px';
+    layerDiv.style.marginTop = (-displayH / 2) + 'px';
+    layerDiv.style.zIndex = String(i + 1);
+    canvas.style.width = '100%';
+    canvas.style.height = '100%';
+    layerDiv.appendChild(canvas);
+    parallaxContainer.appendChild(layerDiv);
+
+    layerElements.push(layerDiv);
+    layerDepths.push(center);
+  }
+}
+
+// ─── ANIMATION ───
+let mouseX = 0.5, mouseY = 0.5;
+let targetX = 0.5, targetY = 0.5;
+
+document.addEventListener('mousemove', e => {
+  if (useGyro) return;
+  targetX = e.clientX / window.innerWidth;
+  targetY = e.clientY / window.innerHeight;
+});
+
+window.addEventListener('deviceorientation', e => {
+  if (!useGyro) return;
+  const gamma = (e.gamma || 0) / 45;
+  const beta  = ((e.beta  || 0) - 45) / 45;
+  targetX = 0.5 + gamma * 0.5;
+  targetY = 0.5 + beta  * 0.5;
+});
+
+function startAnimation() {
+  function tick() {
+    mouseX += (targetX - mouseX) * 0.09;
+    mouseY += (targetY - mouseY) * 0.09;
+
+    const offsetX = (mouseX - 0.5);
+    const offsetY = (mouseY - 0.5);
+    const s = currentStrength;
+
+    const rotY = offsetX * currentRot;
+    const rotX = -offsetY * currentRot * 0.65;
+    parallaxContainer.style.transform = `rotateY(${rotY}deg) rotateX(${rotX}deg)`;
+
+    // Each layer: near layers move more (factor = depth^1.3)
+    for (let i = 0; i < layerElements.length; i++) {
+      const d = layerDepths[i]; // 0=far, 1=near
+      const factor = Math.pow(d, 1.2);
+      const tx = offsetX * s * factor;
+      const ty = offsetY * s * factor * 0.75;
+      const tz = (d - 0.5) * 80;
+      layerElements[i].style.transform =
+        `translate3d(${tx}px, ${ty}px, ${tz}px)`;
+    }
+
+    animationId = requestAnimationFrame(tick);
+  }
+  tick();
+}
+
+// ─── CONTROL BINDINGS ───
+toggleModeBtn.addEventListener('click', async () => {
+  useGyro = !useGyro;
+  toggleModeBtn.textContent = useGyro ? 'マウス' : 'ジャイロ';
+  modeBadge.innerHTML = '<span class="dot"></span>' + (useGyro ? 'ジャイロ追従' : 'マウス追従');
+  if (useGyro && typeof DeviceOrientationEvent !== 'undefined' &&
+      typeof DeviceOrientationEvent.requestPermission === 'function') {
+    try { await DeviceOrientationEvent.requestPermission(); } catch {}
+  }
+});
+
+depthStrengthInput.addEventListener('input', e => {
+  currentStrength = parseInt(e.target.value);
+  valDepth.textContent = currentStrength;
+});
+
+rotAmountInput.addEventListener('input', e => {
+  currentRot = parseInt(e.target.value);
+  valRot.textContent = currentRot + '°';
+});
+
+layerCountInput.addEventListener('input', e => {
+  currentLayerCount = parseInt(e.target.value);
+  valLayers.textContent = currentLayerCount;
+  if (lastResult) buildParallax();
+});
+
+scaleRange.addEventListener('input', e => {
+  currentScale = parseInt(e.target.value) / 100;
+  valScale.textContent = e.target.value + '%';
+  // Rebuild so layers get new center-pinned margins
+  if (lastResult) buildParallax();
+});
+
+btnCopy.addEventListener('click', async () => {
+  const settings = {
+    depthStrength: currentStrength,
+    rotation: currentRot,
+    layerCount: currentLayerCount,
+    scale: currentScale
+  };
+  const text = JSON.stringify(settings, null, 2);
+  try {
+    await navigator.clipboard.writeText(text);
+    btnCopy.classList.add('copied');
+    const prev = btnCopy.textContent;
+    btnCopy.textContent = 'コピー済';
+    setTimeout(() => {
+      btnCopy.classList.remove('copied');
+      btnCopy.textContent = prev;
+    }, 1400);
+  } catch (err) {
+    showError('クリップボードコピー失敗');
+  }
+});
+
+btnReset.addEventListener('click', () => {
+  uploadScreen.classList.remove('hidden');
+  viewer.classList.remove('active');
+  controls.classList.remove('active');
+  depthPreview.classList.remove('active');
+  modeBadge.classList.remove('active');
+  fileInput.value = '';
+});
+
+window.addEventListener('resize', () => {
+  if (lastResult) buildParallax();
+});
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+</script>
+</body>
+</html>
