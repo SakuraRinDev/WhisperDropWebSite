@@ -239,13 +239,16 @@ nav.scrolled {
 
 .hero-title {
   font-family: 'Cormorant Garamond', 'Noto Serif JP', serif;
-  font-size: clamp(3rem, 7vw, 5.6rem);
+  font-size: clamp(2.4rem, 6.2vw, 5.2rem);
   font-weight: 500;
   letter-spacing: -0.015em;
-  line-height: 1.02;
+  line-height: 1.08;
   margin-bottom: 1.6rem;
   color: var(--text-primary);
   text-shadow: 0 2px 40px rgba(0,0,0,0.8);
+  text-wrap: balance;
+  word-break: keep-all;
+  overflow-wrap: normal;
 }
 .hero-title em {
   font-style: italic;
@@ -255,14 +258,15 @@ nav.scrolled {
 
 .hero-sub {
   font-family: 'Lora', 'Noto Serif JP', serif;
-  font-size: clamp(1rem, 1.3vw, 1.12rem);
+  font-size: clamp(0.92rem, 1.25vw, 1.1rem);
   font-style: italic;
   color: var(--text-secondary);
-  max-width: 560px;
+  max-width: 540px;
   margin: 0 auto 2.8rem;
   line-height: 1.85;
   font-weight: 400;
   text-shadow: 0 1px 20px rgba(0,0,0,0.6);
+  text-wrap: pretty;
 }
 
 .hero-cta {
@@ -715,14 +719,30 @@ footer {
   font-weight: 300;
 }
 
-@media (max-width: 720px) {
-  nav { padding: 18px 24px; }
-  .nav-links { gap: 18px; }
+@media (max-width: 820px) {
+  nav { padding: 16px 20px; gap: 12px; }
+  .brand { font-size: 1.1rem; }
+  .brand-mark { font-size: 0.85em; }
+  .nav-links { gap: 16px; }
   .nav-link { font-size: 0.78rem; }
-  section { padding: 90px 28px; }
-  .download-card { padding: 48px 28px 40px; }
+  .lang-toggle { padding: 4px 9px; font-size: 0.62rem; }
+  section { padding: 90px 26px; }
+  .download-card { padding: 48px 26px 40px; }
   .hero-ornament { display: none; }
   .philosophy-quote { padding: 0 16px; }
+  .hero-content { padding: 0 22px; }
+  .hero-ribbon { font-size: 0.75rem; letter-spacing: 0.18em; }
+  .hero-ribbon::before, .hero-ribbon::after { width: 26px; }
+  .hero-sub { max-width: 440px; }
+}
+
+@media (max-width: 560px) {
+  nav { padding: 14px 16px; gap: 8px; }
+  .brand { font-size: 0.98rem; gap: 6px; }
+  .nav-links { gap: 12px; }
+  .nav-link { font-size: 0.72rem; }
+  /* Hide GitHub link on narrow screens — it's already in the hero CTA */
+  .nav-link[href*="github"] { display: none; }
 }
 </style>
 </head>
@@ -789,8 +809,7 @@ footer {
       Whispers, <em>turned</em> to words.
     </h1>
     <p class="hero-sub" data-i18n="heroSub">
-      Press a key and speak — your thoughts become text, gently and instantly.<br>
-      Everything happens on your device. Nothing ever leaves.
+      Press a key and speak — your thoughts become text, gently and instantly. Everything happens on your device. Nothing ever leaves.
     </p>
     <div class="hero-cta">
       <a class="btn btn-primary" href="#download">
@@ -957,7 +976,7 @@ const I18N = {
     navDownload: '入手する',
     heroRibbon: 'Local · Private · Elegant',
     heroTitle: '囁きを、<em>言葉</em>に。',
-    heroSub: 'ショートカットひとつで、想いはそのまま文字になる。<br>すべてはあなたの端末のなかで完結し、外へは何も送られない。',
+    heroSub: 'ショートカットひとつで、想いはそのまま文字になる。すべてはあなたの端末のなかで完結し、外へは何も送られない。',
     ctaDownload: 'ダウンロード',
     ctaGithub: 'GitHub を見る',
     platformNote: 'Windows 10 / 11  —  macOS 対応準備中',
@@ -995,7 +1014,7 @@ const I18N = {
     navDownload: 'Download',
     heroRibbon: 'Local · Private · Elegant',
     heroTitle: 'Whispers, <em>turned</em> to words.',
-    heroSub: 'Press a key and speak — your thoughts become text, gently and instantly.<br>Everything happens on your device. Nothing ever leaves.',
+    heroSub: 'Press a key and speak — your thoughts become text, gently and instantly. Everything happens on your device. Nothing ever leaves.',
     ctaDownload: 'Download',
     ctaGithub: 'View on GitHub',
     platformNote: 'Windows 10 / 11  —  macOS coming soon',
@@ -1272,6 +1291,38 @@ document.addEventListener('mousemove', e => {
   targetY = (e.clientY - rect.top) / rect.height;
   targetY = Math.max(0, Math.min(1, targetY));
 });
+
+// Gyro (mobile)
+const isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+
+function enableGyro() {
+  window.addEventListener('deviceorientation', e => {
+    // gamma: left/right tilt (-90..90), beta: front/back tilt (-180..180)
+    const gamma = (e.gamma || 0) / 35;   // ±35° → ±1
+    const beta  = ((e.beta  || 0) - 40) / 35;
+    targetX = 0.5 + Math.max(-1, Math.min(1, gamma)) * 0.5;
+    targetY = 0.5 + Math.max(-1, Math.min(1, beta))  * 0.5;
+  });
+}
+
+if (isTouch) {
+  // iOS 13+ requires explicit permission on user gesture
+  if (typeof DeviceOrientationEvent !== 'undefined' &&
+      typeof DeviceOrientationEvent.requestPermission === 'function') {
+    // Request on first tap anywhere
+    const askPermission = async () => {
+      try {
+        const result = await DeviceOrientationEvent.requestPermission();
+        if (result === 'granted') enableGyro();
+      } catch {}
+      document.removeEventListener('touchend', askPermission);
+    };
+    document.addEventListener('touchend', askPermission, { once: true });
+  } else {
+    // Android / older iOS: no permission needed
+    enableGyro();
+  }
+}
 
 function startAnimation() {
   function tick() {

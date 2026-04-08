@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__Claude_Preview__preview_start",
+      "WebFetch(domain:github.com)",
+      "Bash(ls -la \"C:/Users/m2dke/Downloads/peck666_Neo_Tokyo_City_Blue_Night_Future_City_Close_up_shot_f_\"*)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(gh auth:*)",
+      "Bash(git -C F:/work/WhisperDropWebSite status)",
+      "Bash(gh repo:*)"
+    ]
+  }
+}
