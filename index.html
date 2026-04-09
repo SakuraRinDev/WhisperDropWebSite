@@ -1069,14 +1069,12 @@ window.addEventListener('scroll', () => {
   nav.classList.toggle('scrolled', window.scrollY > 20);
 });
 
-// ─── Parallax Hero (pre-baked depth — no AI at runtime) ───
-// Settings from data.txt — used as-is on every device.
+// ─── Parallax Hero — WebGL single-pass parallax occlusion mapping ───
+// Settings from data.txt.
 const SETTINGS = {
   depthStrength: 350,
   rotation: 9,
-  layerCount: 26,
-  scale: 1.07,
-  maxRes: 1280
+  scale: 1.07
 };
 const HERO_IMAGE = 'hero.png';
 const DEPTH_IMAGE = 'hero-depth.png';
@@ -1092,12 +1090,10 @@ function setLoader(pct, text) {
   if (text) loaderText.textContent = text;
 }
 
-let lastResult = null;
-let layerElements = [];
-let layerDepths = [];
-let animationId = null;
+// Shared state (mouse/gyro drives these; both renderers read them)
+let targetX = 0, targetY = 0;
+let smoothX = 0, smoothY = 0;
 
-// Load an image as a promise
 function loadImg(src) {
   return new Promise((res, rej) => {
     const img = new Image();
@@ -1108,230 +1104,268 @@ function loadImg(src) {
   });
 }
 
-async function initHero() {
-  try {
-    setLoader(10, 'LOADING IMAGES');
-    const [heroImg, depthImg] = await Promise.all([
-      loadImg(HERO_IMAGE),
-      loadImg(DEPTH_IMAGE)
-    ]);
-
-    setLoader(45, 'PREPARING CANVAS');
-    const MAX = SETTINGS.maxRes;
-    let w = heroImg.width, h = heroImg.height;
-    if (w > MAX || h > MAX) {
-      const r = Math.min(MAX / w, MAX / h);
-      w = Math.round(w * r);
-      h = Math.round(h * r);
-    }
-
-    // Draw hero into canvas at target size
-    const srcCanvas = document.createElement('canvas');
-    srcCanvas.width = w; srcCanvas.height = h;
-    srcCanvas.getContext('2d').drawImage(heroImg, 0, 0, w, h);
-    const srcData = srcCanvas.getContext('2d').getImageData(0, 0, w, h);
-
-    // Draw depth map at same target size, extract as 1-channel Uint8Array
-    setLoader(65, 'READING DEPTH MAP');
-    const dCanvas = document.createElement('canvas');
-    dCanvas.width = w; dCanvas.height = h;
-    dCanvas.getContext('2d').drawImage(depthImg, 0, 0, w, h);
-    const dImgData = dCanvas.getContext('2d').getImageData(0, 0, w, h);
-    const depthData = new Uint8Array(w * h);
-    // Use red channel (depth map is grayscale)
-    for (let p = 0; p < w * h; p++) {
-      depthData[p] = dImgData.data[p * 4];
-    }
-    // Normalize full 0-255 range
-    let mn = 255, mx = 0;
-    for (let i = 0; i < depthData.length; i++) {
-      if (depthData[i] < mn) mn = depthData[i];
-      if (depthData[i] > mx) mx = depthData[i];
-    }
-    const rng = mx - mn || 1;
-    for (let i = 0; i < depthData.length; i++) {
-      depthData[i] = Math.round(((depthData[i] - mn) / rng) * 255);
-    }
-
-    setLoader(85, 'COMPOSING LAYERS');
-    lastResult = { srcData, depthData, w, h };
-    buildParallax();
-
-    setLoader(100, 'READY');
-    await new Promise(r => setTimeout(r, 300));
-    loader.classList.add('done');
-    heroContent.classList.add('visible');
-
-    if (!animationId) startAnimation();
-  } catch (err) {
-    console.error('Hero init failed:', err);
-    // Fallback: show hero.png as static background, skip parallax
-    parallaxContainer.innerHTML = '';
-    const fallback = document.createElement('img');
-    fallback.src = HERO_IMAGE;
-    fallback.style.cssText = 'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);min-width:100%;min-height:100%;object-fit:cover;';
-    parallaxContainer.appendChild(fallback);
-    loader.classList.add('done');
-    heroContent.classList.add('visible');
-  }
-}
-
-function buildParallax() {
-  if (!lastResult) return;
-  const { srcData, depthData, w, h } = lastResult;
-
-  parallaxContainer.innerHTML = '';
-  layerElements = [];
-  layerDepths = [];
-
-  const N = SETTINGS.layerCount;
-  const viewW = window.innerWidth;
-  const viewH = window.innerHeight;
-  const fitScale = Math.max(viewW / w, viewH / h) * SETTINGS.scale;
-  const displayW = w * fitScale;
-  const displayH = h * fitScale;
-
-  parallaxContainer.style.width = displayW + 'px';
-  parallaxContainer.style.height = displayH + 'px';
-
-  for (let i = 0; i < N; i++) {
-    const center = (i + 0.5) / N;
-    const half = (1 / N) * 1.2;
-    const lo = Math.max(0, center - half);
-    const hi = Math.min(1, center + half);
-
-    const canvas = document.createElement('canvas');
-    canvas.width = w; canvas.height = h;
-    const ctx = canvas.getContext('2d');
-    const imgData = ctx.createImageData(w, h);
-    const out = imgData.data;
-
-    for (let p = 0; p < w * h; p++) {
-      const dN = depthData[p] / 255;
-      let alpha = 0;
-      if (dN >= lo && dN <= hi) {
-        const t = (dN - lo) / (hi - lo);
-        alpha = Math.sin(t * Math.PI);
-      }
-      out[p * 4]     = srcData.data[p * 4];
-      out[p * 4 + 1] = srcData.data[p * 4 + 1];
-      out[p * 4 + 2] = srcData.data[p * 4 + 2];
-      out[p * 4 + 3] = Math.round(Math.min(1, alpha) * 255);
-    }
-    ctx.putImageData(imgData, 0, 0);
-
-    if (i === 0) {
-      const full = ctx.createImageData(w, h);
-      for (let p = 0; p < w * h; p++) {
-        full.data[p*4]   = Math.round(srcData.data[p*4]   * 0.5);
-        full.data[p*4+1] = Math.round(srcData.data[p*4+1] * 0.5);
-        full.data[p*4+2] = Math.round(srcData.data[p*4+2] * 0.55);
-        full.data[p*4+3] = 255;
-      }
-      const bgC = document.createElement('canvas');
-      bgC.width = w; bgC.height = h;
-      bgC.getContext('2d').putImageData(full, 0, 0);
-      ctx.globalCompositeOperation = 'destination-over';
-      ctx.drawImage(bgC, 0, 0);
-      ctx.globalCompositeOperation = 'source-over';
-    }
-
-    const layerDiv = document.createElement('div');
-    layerDiv.className = 'parallax-layer';
-    layerDiv.style.width = displayW + 'px';
-    layerDiv.style.height = displayH + 'px';
-    layerDiv.style.marginLeft = (-displayW / 2) + 'px';
-    layerDiv.style.marginTop = (-displayH / 2) + 'px';
-    layerDiv.style.zIndex = String(i + 1);
-    canvas.style.width = '100%';
-    canvas.style.height = '100%';
-    layerDiv.appendChild(canvas);
-    parallaxContainer.appendChild(layerDiv);
-
-    layerElements.push(layerDiv);
-    layerDepths.push(center);
-  }
-}
-
-// Animation
-let mouseX = 0.5, mouseY = 0.5;
-let targetX = 0.5, targetY = 0.5;
-
+// ── Input: mouse + gyro ──────────────────────────────────────────────
 document.addEventListener('mousemove', e => {
   const hero = document.getElementById('hero');
   const rect = hero.getBoundingClientRect();
-  if (rect.bottom < 0) return;
-  targetX = e.clientX / window.innerWidth;
-  targetY = (e.clientY - rect.top) / rect.height;
-  targetY = Math.max(0, Math.min(1, targetY));
+  if (rect.bottom < 0) return; // hero off-screen → freeze
+  targetX = (e.clientX / window.innerWidth) - 0.5;
+  let ny = (e.clientY - rect.top) / rect.height - 0.5;
+  targetY = Math.max(-0.5, Math.min(0.5, ny));
 });
 
-// Gyro (mobile)
 const isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
-
 function enableGyro() {
   window.addEventListener('deviceorientation', e => {
-    // gamma: left/right tilt (-90..90), beta: front/back tilt (-180..180)
-    const gamma = (e.gamma || 0) / 35;   // ±35° → ±1
-    const beta  = ((e.beta  || 0) - 40) / 35;
-    targetX = 0.5 + Math.max(-1, Math.min(1, gamma)) * 0.5;
-    targetY = 0.5 + Math.max(-1, Math.min(1, beta))  * 0.5;
+    const g = Math.max(-1, Math.min(1, (e.gamma || 0) / 35));
+    const b = Math.max(-1, Math.min(1, ((e.beta || 0) - 40) / 35));
+    targetX = g * 0.5;
+    targetY = b * 0.5;
   });
 }
-
 if (isTouch) {
-  // iOS 13+ requires explicit permission on user gesture
   if (typeof DeviceOrientationEvent !== 'undefined' &&
       typeof DeviceOrientationEvent.requestPermission === 'function') {
-    // Request on first tap anywhere
-    const askPermission = async () => {
+    const ask = async () => {
       try {
-        const result = await DeviceOrientationEvent.requestPermission();
-        if (result === 'granted') enableGyro();
+        const r = await DeviceOrientationEvent.requestPermission();
+        if (r === 'granted') enableGyro();
       } catch {}
-      document.removeEventListener('touchend', askPermission);
     };
-    document.addEventListener('touchend', askPermission, { once: true });
+    document.addEventListener('touchend', ask, { once: true });
   } else {
-    // Android / older iOS: no permission needed
     enableGyro();
   }
 }
 
-function startAnimation() {
-  function tick() {
-    mouseX += (targetX - mouseX) * 0.07;
-    mouseY += (targetY - mouseY) * 0.07;
+// ══════════════════════════════════════════════════════════════════════
+//  WebGL renderer (primary)
+// ══════════════════════════════════════════════════════════════════════
 
-    const ox = mouseX - 0.5;
-    const oy = mouseY - 0.5;
-    const s = SETTINGS.depthStrength;
-    const r = SETTINGS.rotation;
+const VS = `
+attribute vec2 aPos;
+attribute vec2 aUV;
+varying vec2 vUV;
+void main() {
+  vUV = aUV;
+  gl_Position = vec4(aPos, 0.0, 1.0);
+}
+`;
 
-    const rotY = ox * r;
-    const rotX = -oy * r * 0.65;
+// Parallax Occlusion Mapping fragment shader.
+// For each pixel, march along the parallax direction until the ray depth
+// exceeds the sampled heightmap, then linearly refine. This gives the
+// same visual as N depth-sliced canvases but in a single GPU pass.
+const FS = `
+precision mediump float;
+varying vec2 vUV;
+uniform sampler2D uImage;
+uniform sampler2D uDepth;
+uniform vec2  uMouse;
+uniform vec2  uResolution;
+uniform float uStrength;
+
+void main() {
+  vec2 uv = vUV;
+  vec2 pxToUV = vec2(1.0) / uResolution;
+  vec2 maxOffset = -uMouse * uStrength * pxToUV;
+
+  const int STEPS = 14;
+  float layerStep = 1.0 / float(STEPS);
+  vec2 deltaUV = maxOffset * layerStep;
+
+  vec2 curUV = uv;
+  float curLayerDepth = 0.0;
+  float sampledHeight = 1.0 - texture2D(uDepth, curUV).r;
+
+  for (int i = 0; i < 14; i++) {
+    if (curLayerDepth >= sampledHeight) break;
+    curUV += deltaUV;
+    sampledHeight = 1.0 - texture2D(uDepth, curUV).r;
+    curLayerDepth += layerStep;
+  }
+
+  vec2 prevUV = curUV - deltaUV;
+  float afterDepth  = sampledHeight - curLayerDepth;
+  float beforeDepth = (1.0 - texture2D(uDepth, prevUV).r) - (curLayerDepth - layerStep);
+  float weight = afterDepth / (afterDepth - beforeDepth);
+  vec2 finalUV = mix(curUV, prevUV, weight);
+  finalUV = clamp(finalUV, vec2(0.0), vec2(1.0));
+
+  vec4 color = texture2D(uImage, finalUV);
+
+  // Gentle vignette hides any micro-artefacts at extreme edges
+  vec2 d = abs(vUV - 0.5) * 2.0;
+  float edge = smoothstep(1.0, 0.7, max(d.x, d.y));
+  color.rgb *= mix(0.9, 1.0, edge);
+
+  gl_FragColor = color;
+}
+`;
+
+async function initHeroWebGL() {
+  // Create a canvas inside the parallax-container
+  parallaxContainer.innerHTML = '';
+  const canvas = document.createElement('canvas');
+  canvas.style.display = 'block';
+  canvas.style.width = '100%';
+  canvas.style.height = '100%';
+  parallaxContainer.appendChild(canvas);
+
+  const gl = canvas.getContext('webgl', { antialias: true, premultipliedAlpha: false })
+          || canvas.getContext('experimental-webgl');
+  if (!gl) throw new Error('WebGL unsupported');
+
+  // Compile shaders
+  function compile(type, src) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS))
+      throw new Error('Shader: ' + gl.getShaderInfoLog(s));
+    return s;
+  }
+  const prog = gl.createProgram();
+  gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+  gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS))
+    throw new Error('Link: ' + gl.getProgramInfoLog(prog));
+  gl.useProgram(prog);
+
+  // Fullscreen quad
+  const quad = new Float32Array([
+    -1,-1, 0,1,   1,-1, 1,1,   -1,1, 0,0,
+    -1, 1, 0,0,   1,-1, 1,1,    1,1, 1,0
+  ]);
+  const vbo = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+  gl.bufferData(gl.ARRAY_BUFFER, quad, gl.STATIC_DRAW);
+  const aPos = gl.getAttribLocation(prog, 'aPos');
+  const aUV  = gl.getAttribLocation(prog, 'aUV');
+  gl.enableVertexAttribArray(aPos);
+  gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 16, 0);
+  gl.enableVertexAttribArray(aUV);
+  gl.vertexAttribPointer(aUV, 2, gl.FLOAT, false, 16, 8);
+
+  const uImage      = gl.getUniformLocation(prog, 'uImage');
+  const uDepth      = gl.getUniformLocation(prog, 'uDepth');
+  const uMouse      = gl.getUniformLocation(prog, 'uMouse');
+  const uResolution = gl.getUniformLocation(prog, 'uResolution');
+  const uStrength   = gl.getUniformLocation(prog, 'uStrength');
+
+  // Load textures
+  setLoader(30, 'LOADING IMAGES');
+  const [heroImg, depthImg] = await Promise.all([
+    loadImg(HERO_IMAGE),
+    loadImg(DEPTH_IMAGE)
+  ]);
+
+  setLoader(75, 'UPLOADING TO GPU');
+  function upload(img, unit) {
+    const tex = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE0 + unit);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  }
+  upload(heroImg, 0);
+  upload(depthImg, 1);
+  gl.uniform1i(uImage, 0);
+  gl.uniform1i(uDepth, 1);
+  gl.clearColor(0.04, 0.08, 0.13, 1.0);
+
+  // Sizing: cover-fit hero to viewport × scale
+  const heroW = heroImg.width, heroH = heroImg.height;
+  const aspect = heroW / heroH;
+
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    let cssW, cssH;
+    if (vw / vh > aspect) {
+      cssW = vw * SETTINGS.scale;
+      cssH = cssW / aspect;
+    } else {
+      cssH = vh * SETTINGS.scale;
+      cssW = cssH * aspect;
+    }
+    parallaxContainer.style.width = cssW + 'px';
+    parallaxContainer.style.height = cssH + 'px';
+    const bufW = Math.round(cssW * dpr);
+    const bufH = Math.round(cssH * dpr);
+    canvas.width = bufW; canvas.height = bufH;
+    canvas.style.width = cssW + 'px';
+    canvas.style.height = cssH + 'px';
+    gl.viewport(0, 0, bufW, bufH);
+    gl.uniform2f(uResolution, bufW, bufH);
+  }
+  resize();
+  window.addEventListener('resize', resize);
+
+  setLoader(100, 'READY');
+  await new Promise(r => setTimeout(r, 300));
+  loader.classList.add('done');
+  heroContent.classList.add('visible');
+
+  // Render loop
+  function render() {
+    smoothX += (targetX - smoothX) * 0.08;
+    smoothY += (targetY - smoothY) * 0.08;
+
+    // Scene rotation on the container
+    const rotY = smoothX * SETTINGS.rotation * 2;
+    const rotX = -smoothY * SETTINGS.rotation * 2 * 0.65;
     parallaxContainer.style.transform = `rotateY(${rotY}deg) rotateX(${rotX}deg)`;
 
-    for (let i = 0; i < layerElements.length; i++) {
-      const d = layerDepths[i];
-      const factor = Math.pow(d, 1.3);
-      const tx = ox * s * factor;
-      const ty = oy * s * factor * 0.75;
-      const tz = (d - 0.5) * 80;
-      layerElements[i].style.transform = `translate3d(${tx}px, ${ty}px, ${tz}px)`;
-    }
-    animationId = requestAnimationFrame(tick);
+    gl.uniform2f(uMouse, smoothX, smoothY);
+    gl.uniform1f(uStrength, SETTINGS.depthStrength);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    requestAnimationFrame(render);
   }
-  tick();
+  render();
 }
 
-window.addEventListener('resize', () => {
-  if (lastResult) buildParallax();
-});
+// ══════════════════════════════════════════════════════════════════════
+//  Static fallback (no WebGL)
+// ══════════════════════════════════════════════════════════════════════
+async function initHeroFallback() {
+  setLoader(50, 'FALLBACK MODE');
+  parallaxContainer.innerHTML = '';
+  const img = document.createElement('img');
+  img.src = HERO_IMAGE;
+  img.style.cssText =
+    'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);' +
+    'min-width:100%;min-height:100%;object-fit:cover;';
+  parallaxContainer.appendChild(img);
+  await new Promise(r => { img.onload = r; img.onerror = r; });
+  setLoader(100, 'READY');
+  await new Promise(r => setTimeout(r, 300));
+  loader.classList.add('done');
+  heroContent.classList.add('visible');
+}
 
-// Kick off
+// Boot with WebGL → static fallback on any error
+(async () => {
+  try {
+    await initHeroWebGL();
+  } catch (err) {
+    console.warn('WebGL hero failed, using static fallback:', err);
+    try { await initHeroFallback(); } catch (e) {
+      console.error('Fallback also failed:', e);
+      loader.classList.add('done');
+      heroContent.classList.add('visible');
+    }
+  }
+})();
+
+// Kick off i18n
 applyLang();
-initHero();
 </script>
 </body>
 </html>

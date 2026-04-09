@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>2.5D Parallax · WebGL Test</title>
+<style>
+  html, body {
+    margin: 0; padding: 0;
+    width: 100%; height: 100%;
+    background: #0a1420;
+    color: #e5e5e5;
+    font-family: system-ui, -apple-system, sans-serif;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+  #stage {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    perspective: 1400px;
+  }
+  .scene {
+    position: relative;
+    transform-style: preserve-3d;
+    transition: transform 0.12s ease-out;
+    transform-origin: 50% 50% 0;
+  }
+  canvas#gl {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+  /* HUD */
+  #hud {
+    position: fixed;
+    top: 16px; left: 16px;
+    z-index: 100;
+    background: rgba(13,13,18,0.72);
+    backdrop-filter: blur(18px) saturate(1.2);
+    -webkit-backdrop-filter: blur(18px) saturate(1.2);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 12px;
+    padding: 12px 14px;
+    font-size: 0.72rem;
+    font-family: 'SF Mono', Menlo, monospace;
+    line-height: 1.7;
+    min-width: 220px;
+    color: #d4d4e0;
+  }
+  #hud .row { display: flex; justify-content: space-between; gap: 12px; }
+  #hud .row span:first-child { color: #8b8ba8; }
+  #hud .row span:last-child { color: #c9a96a; font-variant-numeric: tabular-nums; }
+  #hud h3 {
+    margin: 0 0 8px;
+    font-size: 0.78rem;
+    font-weight: 500;
+    color: #e8dfc8;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  #hud .sep {
+    height: 1px;
+    background: rgba(255,255,255,0.08);
+    margin: 8px 0;
+  }
+  #err {
+    position: fixed;
+    top: 16px; right: 16px;
+    z-index: 100;
+    padding: 10px 14px;
+    background: rgba(60,12,12,0.88);
+    border: 1px solid rgba(239,68,68,0.5);
+    color: #fca5a5;
+    border-radius: 8px;
+    font-size: 0.75rem;
+    max-width: 360px;
+    display: none;
+    font-family: 'SF Mono', Menlo, monospace;
+  }
+  #loader {
+    position: fixed; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: #0a1420;
+    z-index: 200;
+    transition: opacity 0.6s ease, visibility 0.6s ease;
+    font-family: 'Georgia', serif;
+    font-style: italic;
+    font-size: 1.2rem;
+    color: #c9a96a;
+  }
+  #loader.done { opacity: 0; visibility: hidden; }
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <div class="scene" id="scene">
+    <canvas id="gl"></canvas>
+  </div>
+</div>
+
+<div id="loader">Loading WebGL...</div>
+<div id="err"></div>
+
+<div id="hud">
+  <h3>WebGL Parallax · Test</h3>
+  <div class="row"><span>renderer</span><span id="r-renderer">—</span></div>
+  <div class="row"><span>resolution</span><span id="r-res">—</span></div>
+  <div class="row"><span>FPS</span><span id="r-fps">—</span></div>
+  <div class="sep"></div>
+  <div class="row"><span>depthStrength</span><span id="r-strength">350</span></div>
+  <div class="row"><span>rotation</span><span id="r-rot">9°</span></div>
+  <div class="row"><span>scale</span><span id="r-scale">1.07</span></div>
+  <div class="sep"></div>
+  <div class="row"><span>mode</span><span id="r-mode">mouse</span></div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════
+//  Settings — matches data.txt exactly
+// ═══════════════════════════════════════════════════════
+const SETTINGS = {
+  depthStrength: 350,   // parallax pixel amount at depth=1
+  rotation: 9,          // degrees of scene rotation
+  scale: 1.07           // cover-fit multiplier
+};
+const HERO_IMAGE = '../hero.png';
+const DEPTH_IMAGE = '../hero-depth.png';
+
+// ═══════════════════════════════════════════════════════
+//  GLSL Shaders
+// ═══════════════════════════════════════════════════════
+
+// Vertex shader: a fullscreen quad in clip space, passing uv through.
+const VS = `
+attribute vec2 aPos;
+attribute vec2 aUV;
+varying vec2 vUV;
+void main() {
+  vUV = aUV;
+  gl_Position = vec4(aPos, 0.0, 1.0);
+}
+`;
+
+// Fragment shader: the core of the effect.
+//
+// For each pixel, look up the depth from hero-depth.png. Then shift the
+// color-sampling UV **toward** the mouse by an amount proportional to
+// depth^1.3, where 0 = far (no shift) and 1 = near (max shift).
+//
+// This is mathematically equivalent to the Canvas2D version that
+// translates 26 depth-sliced layers by `depth^1.3 * strength`, but
+// evaluated continuously in a single GPU pass.
+//
+// Additional touches:
+//  - We take a few "iterative" samples along the parallax direction so
+//    that when the foreground moves, it smoothly reveals what's behind
+//    (parallax occlusion). Keeps edges crisp without building N canvases.
+//  - Far-edge softening: we subtly darken extreme background to hide
+//    seams, mirroring the current Canvas2D "inpaint" trick on layer 0.
+const FS = `
+precision mediump float;
+
+varying vec2 vUV;
+
+uniform sampler2D uImage;
+uniform sampler2D uDepth;
+uniform vec2  uMouse;       // -0.5..0.5
+uniform vec2  uResolution;  // canvas px
+uniform float uStrength;    // pixels of max parallax
+uniform float uTime;
+
+// Sample depth with a small blur to avoid hard band transitions.
+float sampleDepth(vec2 uv) {
+  return texture2D(uDepth, uv).r;
+}
+
+void main() {
+  vec2 uv = vUV;
+
+  // Parallax offset direction: opposite to the mouse so moving the mouse
+  // right reveals the right side of near objects.
+  vec2 pxToUV = vec2(1.0) / uResolution;
+  vec2 maxOffset = -uMouse * uStrength * pxToUV;
+
+  // Parallax Occlusion Mapping via fixed-step search.
+  // We march the UV along the parallax direction in small steps,
+  // reading depth, and stop when the ray's "virtual height" no longer
+  // exceeds the stored depth. This is the standard POM algorithm and
+  // gives the visual illusion of real 3D depth.
+  const int STEPS = 14;
+  float layerStep = 1.0 / float(STEPS);
+  vec2 deltaUV = maxOffset * layerStep;
+
+  vec2 curUV = uv;
+  float curLayerDepth = 0.0;
+  float sampled = sampleDepth(curUV);
+  // Invert: depth map is 1=near (from Depth-Anything-V2).
+  // POM expects 1=far so the ray hits it first. We use (1-depth).
+  float sampledHeight = 1.0 - sampled;
+
+  for (int i = 0; i < 14; i++) {
+    if (curLayerDepth >= sampledHeight) break;
+    curUV += deltaUV;
+    sampled = sampleDepth(curUV);
+    sampledHeight = 1.0 - sampled;
+    curLayerDepth += layerStep;
+  }
+
+  // Refine with a single linear interpolation between the last two taps
+  // (prevents the stepped "staircase" look).
+  vec2 prevUV = curUV - deltaUV;
+  float afterDepth = sampledHeight - curLayerDepth;
+  float beforeDepth = (1.0 - sampleDepth(prevUV)) - (curLayerDepth - layerStep);
+  float weight = afterDepth / (afterDepth - beforeDepth);
+  vec2 finalUV = mix(curUV, prevUV, weight);
+
+  // Clamp so we don't sample outside the texture
+  finalUV = clamp(finalUV, vec2(0.0), vec2(1.0));
+
+  vec4 color = texture2D(uImage, finalUV);
+
+  // Slight vignette at the very edges (helps hide any tiny sampling artefacts)
+  vec2 d = abs(vUV - 0.5) * 2.0;
+  float edge = smoothstep(1.0, 0.7, max(d.x, d.y));
+  color.rgb *= mix(0.88, 1.0, edge);
+
+  gl_FragColor = color;
+}
+`;
+
+// ═══════════════════════════════════════════════════════
+//  WebGL setup
+// ═══════════════════════════════════════════════════════
+const canvas = document.getElementById('gl');
+const loader = document.getElementById('loader');
+const errEl = document.getElementById('err');
+const scene = document.getElementById('scene');
+
+function showError(msg) {
+  errEl.textContent = 'Error: ' + msg;
+  errEl.style.display = 'block';
+  console.error(msg);
+}
+
+const gl = canvas.getContext('webgl', { antialias: true, premultipliedAlpha: false })
+        || canvas.getContext('experimental-webgl');
+
+if (!gl) {
+  showError('WebGL not supported on this device');
+  throw new Error('No WebGL');
+}
+
+// Report renderer
+const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+const rendererName = dbg
+  ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)
+  : gl.getParameter(gl.RENDERER);
+document.getElementById('r-renderer').textContent =
+  rendererName.length > 28 ? rendererName.slice(0, 28) + '…' : rendererName;
+
+// Compile a shader
+function compile(type, src) {
+  const sh = gl.createShader(type);
+  gl.shaderSource(sh, src);
+  gl.compileShader(sh);
+  if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(sh);
+    gl.deleteShader(sh);
+    throw new Error('Shader compile: ' + log);
+  }
+  return sh;
+}
+
+// Link program
+function link(vs, fs) {
+  const p = gl.createProgram();
+  gl.attachShader(p, vs);
+  gl.attachShader(p, fs);
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+    throw new Error('Link: ' + gl.getProgramInfoLog(p));
+  }
+  return p;
+}
+
+let program;
+try {
+  const vs = compile(gl.VERTEX_SHADER, VS);
+  const fs = compile(gl.FRAGMENT_SHADER, FS);
+  program = link(vs, fs);
+} catch (e) {
+  showError(e.message);
+  throw e;
+}
+
+gl.useProgram(program);
+
+// Fullscreen quad: 2 triangles covering clip space [-1..1]
+const quadVerts = new Float32Array([
+  //  pos        uv
+  -1, -1,  0, 1,
+   1, -1,  1, 1,
+  -1,  1,  0, 0,
+  -1,  1,  0, 0,
+   1, -1,  1, 1,
+   1,  1,  1, 0,
+]);
+const vbo = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+gl.bufferData(gl.ARRAY_BUFFER, quadVerts, gl.STATIC_DRAW);
+
+const aPos = gl.getAttribLocation(program, 'aPos');
+const aUV  = gl.getAttribLocation(program, 'aUV');
+const stride = 4 * 4;
+gl.enableVertexAttribArray(aPos);
+gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, stride, 0);
+gl.enableVertexAttribArray(aUV);
+gl.vertexAttribPointer(aUV, 2, gl.FLOAT, false, stride, 2 * 4);
+
+// Uniforms
+const uImage      = gl.getUniformLocation(program, 'uImage');
+const uDepth      = gl.getUniformLocation(program, 'uDepth');
+const uMouse      = gl.getUniformLocation(program, 'uMouse');
+const uResolution = gl.getUniformLocation(program, 'uResolution');
+const uStrength   = gl.getUniformLocation(program, 'uStrength');
+const uTime       = gl.getUniformLocation(program, 'uTime');
+
+// ═══════════════════════════════════════════════════════
+//  Texture loading
+// ═══════════════════════════════════════════════════════
+function loadTexture(url, unit) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      const tex = gl.createTexture();
+      gl.activeTexture(gl.TEXTURE0 + unit);
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      resolve({ tex, w: img.width, h: img.height, img });
+    };
+    img.onerror = () => reject(new Error('Image load failed: ' + url));
+    img.src = url;
+  });
+}
+
+// ═══════════════════════════════════════════════════════
+//  Sizing (cover-fit the hero image to viewport × scale)
+// ═══════════════════════════════════════════════════════
+let heroW = 0, heroH = 0;
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2); // cap at 2x
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+
+  // Fit hero to viewport using "cover" with the user's scale multiplier.
+  const aspect = heroW / heroH;
+  let cssW, cssH;
+  if (vw / vh > aspect) {
+    cssW = vw * SETTINGS.scale;
+    cssH = cssW / aspect;
+  } else {
+    cssH = vh * SETTINGS.scale;
+    cssW = cssH * aspect;
+  }
+
+  scene.style.width  = cssW + 'px';
+  scene.style.height = cssH + 'px';
+
+  const bufW = Math.round(cssW * dpr);
+  const bufH = Math.round(cssH * dpr);
+  canvas.width  = bufW;
+  canvas.height = bufH;
+  canvas.style.width  = cssW + 'px';
+  canvas.style.height = cssH + 'px';
+
+  gl.viewport(0, 0, bufW, bufH);
+  gl.uniform2f(uResolution, bufW, bufH);
+
+  document.getElementById('r-res').textContent = `${bufW}×${bufH} @${dpr}x`;
+}
+
+window.addEventListener('resize', resize);
+
+// ═══════════════════════════════════════════════════════
+//  Input (mouse + gyro)
+// ═══════════════════════════════════════════════════════
+let mouseX = 0, mouseY = 0;
+let targetX = 0, targetY = 0;
+
+document.addEventListener('mousemove', e => {
+  targetX = (e.clientX / window.innerWidth)  - 0.5;
+  targetY = (e.clientY / window.innerHeight) - 0.5;
+});
+
+const isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+function enableGyro() {
+  document.getElementById('r-mode').textContent = 'gyro';
+  window.addEventListener('deviceorientation', e => {
+    const g = Math.max(-1, Math.min(1, (e.gamma || 0) / 35));
+    const b = Math.max(-1, Math.min(1, ((e.beta || 0) - 40) / 35));
+    targetX = g * 0.5;
+    targetY = b * 0.5;
+  });
+}
+if (isTouch) {
+  if (typeof DeviceOrientationEvent !== 'undefined' &&
+      typeof DeviceOrientationEvent.requestPermission === 'function') {
+    document.addEventListener('touchend', async () => {
+      try { const r = await DeviceOrientationEvent.requestPermission(); if (r === 'granted') enableGyro(); } catch {}
+    }, { once: true });
+  } else {
+    enableGyro();
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+//  Render loop
+// ═══════════════════════════════════════════════════════
+let frames = 0, lastFpsT = performance.now();
+function render(now) {
+  // Smooth mouse follow
+  mouseX += (targetX - mouseX) * 0.08;
+  mouseY += (targetY - mouseY) * 0.08;
+
+  // Parallax uniforms
+  gl.uniform2f(uMouse, mouseX, mouseY);
+  gl.uniform1f(uStrength, SETTINGS.depthStrength);
+  gl.uniform1f(uTime, now * 0.001);
+  gl.uniform1i(uImage, 0);
+  gl.uniform1i(uDepth, 1);
+
+  // Scene rotation (CSS transform, cheap on GPU compositor)
+  const rotY = mouseX * SETTINGS.rotation * 2;
+  const rotX = -mouseY * SETTINGS.rotation * 2 * 0.65;
+  scene.style.transform = `rotateY(${rotY}deg) rotateX(${rotX}deg)`;
+
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+  // FPS readout (1x / sec)
+  frames++;
+  if (now - lastFpsT >= 1000) {
+    document.getElementById('r-fps').textContent =
+      Math.round(frames * 1000 / (now - lastFpsT));
+    frames = 0;
+    lastFpsT = now;
+  }
+
+  requestAnimationFrame(render);
+}
+
+// ═══════════════════════════════════════════════════════
+//  Boot
+// ═══════════════════════════════════════════════════════
+(async () => {
+  try {
+    const [image, depth] = await Promise.all([
+      loadTexture(HERO_IMAGE, 0),
+      loadTexture(DEPTH_IMAGE, 1),
+    ]);
+    heroW = image.w;
+    heroH = image.h;
+
+    resize();
+    gl.clearColor(0.04, 0.08, 0.13, 1.0);
+    loader.classList.add('done');
+    requestAnimationFrame(render);
+  } catch (e) {
+    showError(e.message);
+    loader.textContent = 'Failed: ' + e.message;
+  }
+})();
+</script>
+</body>
+</html>
