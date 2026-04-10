@@ -752,7 +752,6 @@ footer {
   .nav-link[href*="github"] { display: none; }
 }
 </style>
-<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
 </head>
 <body>
 
@@ -973,7 +972,7 @@ footer {
 </footer>
 
 <canvas id="ripple-canvas" style="position:fixed;top:0;left:0;width:100vw;height:100vh;pointer-events:none;z-index:99999;"></canvas>
-<canvas id="distortion-canvas" style="position:fixed;top:0;left:0;width:100vw;height:100vh;pointer-events:none;z-index:99997;display:none;"></canvas>
+
 
 <script>
 
@@ -1231,7 +1230,7 @@ async function initHeroWebGL() {
   canvas.style.height = '100%';
   parallaxContainer.appendChild(canvas);
 
-  const gl = canvas.getContext('webgl', { antialias: true, premultipliedAlpha: false, preserveDrawingBuffer: true })
+  const gl = canvas.getContext('webgl', { antialias: true, premultipliedAlpha: false })
           || canvas.getContext('experimental-webgl');
   if (!gl) throw new Error('WebGL unsupported');
 
@@ -1481,128 +1480,6 @@ void main(){
   })();
 })();
 
-// ═══════════════════════════════════════════════════════
-//  Click Distortion — html2canvas snapshot + WebGL ripple warp
-// ═══════════════════════════════════════════════════════
-(function() {
-  const DIST = { frequency:35, amplitude:0.015, speed:5.0, decay:1.8, duration:2.0 };
-  const dc = document.getElementById('distortion-canvas');
-  const dgl = dc.getContext('webgl', { alpha: false, premultipliedAlpha: false });
-  if (!dgl) return;
-
-  const DVS = `
-attribute vec2 aPos;
-varying vec2 vUV;
-void main(){
-  vec2 uv = aPos*0.5+0.5;
-  uv.y = 1.0-uv.y;
-  vUV = uv;
-  gl_Position = vec4(aPos,0.0,1.0);
-}`;
-
-  const DFS = `
-precision mediump float;
-varying vec2 vUV;
-uniform sampler2D uTex;
-uniform vec2  uClick;
-uniform float uTime, uFreq, uAmp, uSpeed, uDecay, uAspect;
-void main(){
-  vec2 uv = vUV;
-  vec2 diff = uv - uClick;
-  diff.x *= uAspect;
-  float dist = length(diff);
-  if(dist>0.001 && uTime>0.0){
-    float wf = uTime*uSpeed*0.08;
-    float nf = exp(-(dist-wf)*(dist-wf)*40.0);
-    float wave = sin(dist*uFreq - uTime*uSpeed);
-    float fade = exp(-uTime*uDecay);
-    vec2 dir = normalize(diff);
-    uv += dir * wave * nf * fade * uAmp;
-  }
-  uv = clamp(uv,0.0,1.0);
-  gl_FragColor = texture2D(uTex, uv);
-}`;
-
-  function cs2(src,t){ const s=dgl.createShader(t); dgl.shaderSource(s,src); dgl.compileShader(s); return s; }
-  const dp = dgl.createProgram();
-  dgl.attachShader(dp, cs2(DVS, dgl.VERTEX_SHADER));
-  dgl.attachShader(dp, cs2(DFS, dgl.FRAGMENT_SHADER));
-  dgl.linkProgram(dp); dgl.useProgram(dp);
-
-  const db = dgl.createBuffer();
-  dgl.bindBuffer(dgl.ARRAY_BUFFER, db);
-  dgl.bufferData(dgl.ARRAY_BUFFER, new Float32Array([-1,-1,1,-1,-1,1,-1,1,1,-1,1,1]), dgl.STATIC_DRAW);
-  const da = dgl.getAttribLocation(dp,'aPos');
-  dgl.enableVertexAttribArray(da);
-  dgl.vertexAttribPointer(da,2,dgl.FLOAT,false,0,0);
-
-  const dl = (n) => dgl.getUniformLocation(dp, n);
-  const duTex=dl('uTex'), duClick=dl('uClick'), duTime=dl('uTime');
-  const duFreq=dl('uFreq'), duAmp=dl('uAmp'), duSpeed=dl('uSpeed');
-  const duDecay=dl('uDecay'), duAspect=dl('uAspect');
-
-  const dtex = dgl.createTexture();
-  dgl.bindTexture(dgl.TEXTURE_2D, dtex);
-  dgl.texParameteri(dgl.TEXTURE_2D, dgl.TEXTURE_WRAP_S, dgl.CLAMP_TO_EDGE);
-  dgl.texParameteri(dgl.TEXTURE_2D, dgl.TEXTURE_WRAP_T, dgl.CLAMP_TO_EDGE);
-  dgl.texParameteri(dgl.TEXTURE_2D, dgl.TEXTURE_MIN_FILTER, dgl.LINEAR);
-  dgl.texParameteri(dgl.TEXTURE_2D, dgl.TEXTURE_MAG_FILTER, dgl.LINEAR);
-
-  let dAnimId = null, dCapturing = false;
-
-  function drsz(){
-    dc.width=innerWidth; dc.height=innerHeight;
-    dc.style.width=innerWidth+'px'; dc.style.height=innerHeight+'px';
-    dgl.viewport(0,0,dc.width,dc.height);
-  }
-  drsz(); addEventListener('resize', drsz);
-
-  document.addEventListener('click', async (e) => {
-    if (dCapturing) return;
-    const cx = e.clientX/innerWidth;
-    const cy = e.clientY/innerHeight;
-    dCapturing = true;
-
-    try {
-      const snap = await html2canvas(document.body, {
-        backgroundColor: '#0e0e14',
-        scale: 1,
-        width: innerWidth,
-        height: innerHeight,
-        x: 0,
-        y: scrollY,
-        useCORS: true,
-        logging: false,
-        ignoreElements: (el) => el.id === 'ripple-canvas' || el.id === 'distortion-canvas',
-      });
-
-      dgl.bindTexture(dgl.TEXTURE_2D, dtex);
-      dgl.texImage2D(dgl.TEXTURE_2D, 0, dgl.RGBA, dgl.RGBA, dgl.UNSIGNED_BYTE, snap);
-      dc.style.display = 'block';
-
-      const t0d = performance.now();
-      if (dAnimId) cancelAnimationFrame(dAnimId);
-
-      (function dloop(){
-        const el = (performance.now()-t0d)/1000;
-        if (el > DIST.duration) { dc.style.display='none'; dAnimId=null; dCapturing=false; return; }
-        dgl.uniform1i(duTex,0);
-        dgl.uniform2f(duClick, cx, cy);
-        dgl.uniform1f(duTime, el);
-        dgl.uniform1f(duFreq, DIST.frequency);
-        dgl.uniform1f(duAmp, DIST.amplitude);
-        dgl.uniform1f(duSpeed, DIST.speed);
-        dgl.uniform1f(duDecay, DIST.decay);
-        dgl.uniform1f(duAspect, dc.width/dc.height);
-        dgl.drawArrays(dgl.TRIANGLES,0,6);
-        dAnimId = requestAnimationFrame(dloop);
-      })();
-    } catch(err) {
-      console.error('Distortion capture failed:', err);
-      dCapturing = false;
-    }
-  });
-})();
 </script>
 </body>
 </html>
