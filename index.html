@@ -1077,11 +1077,18 @@ window.addEventListener('scroll', () => {
 });
 
 // ─── Parallax Hero — WebGL single-pass parallax occlusion mapping ───
-// Settings from data.txt.
-const SETTINGS = {
-  depthStrength: 350,
-  rotation: 9,
-  scale: 1.07
+// Desktop gets stronger parallax; mobile stays lighter for GPU/thermal headroom.
+const _isMobileDevice = (('ontouchstart' in window) || navigator.maxTouchPoints > 0) || window.innerWidth < 768;
+const SETTINGS = _isMobileDevice ? {
+  depthStrength: 160,
+  rotation: 4,
+  scale: 1,
+  steps: 34
+} : {
+  depthStrength: 160,
+  rotation: 4,
+  scale: 1,
+  steps: 34
 };
 const HERO_IMAGE = 'hero.png';
 const DEPTH_IMAGE = 'hero-depth.png';
@@ -1171,21 +1178,22 @@ uniform sampler2D uDepth;
 uniform vec2  uMouse;
 uniform vec2  uResolution;
 uniform float uStrength;
+uniform float uSteps;
 
 void main() {
   vec2 uv = vUV;
   vec2 pxToUV = vec2(1.0) / uResolution;
   vec2 maxOffset = -uMouse * uStrength * pxToUV;
 
-  const int STEPS = 14;
-  float layerStep = 1.0 / float(STEPS);
+  float layerStep = 1.0 / uSteps;
   vec2 deltaUV = maxOffset * layerStep;
 
   vec2 curUV = uv;
   float curLayerDepth = 0.0;
   float sampledHeight = 1.0 - texture2D(uDepth, curUV).r;
 
-  for (int i = 0; i < 14; i++) {
+  for (int i = 0; i < 64; i++) {
+    if (float(i) >= uSteps) break;
     if (curLayerDepth >= sampledHeight) break;
     curUV += deltaUV;
     sampledHeight = 1.0 - texture2D(uDepth, curUV).r;
@@ -1259,6 +1267,7 @@ async function initHeroWebGL() {
   const uMouse      = gl.getUniformLocation(prog, 'uMouse');
   const uResolution = gl.getUniformLocation(prog, 'uResolution');
   const uStrength   = gl.getUniformLocation(prog, 'uStrength');
+  const uStepsLoc   = gl.getUniformLocation(prog, 'uSteps');
 
   // Load textures
   setLoader(30, 'LOADING IMAGES');
@@ -1330,6 +1339,7 @@ async function initHeroWebGL() {
 
     gl.uniform2f(uMouse, smoothX, smoothY);
     gl.uniform1f(uStrength, SETTINGS.depthStrength);
+    gl.uniform1f(uStepsLoc, SETTINGS.steps);
     gl.clear(gl.COLOR_BUFFER_BIT);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
 
