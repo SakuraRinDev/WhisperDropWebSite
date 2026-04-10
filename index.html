@@ -971,6 +971,8 @@ footer {
   <div class="footer-copy">© 2026 SakuraRinDev  ·  <span data-i18n="footerOpen">Open Source</span></div>
 </footer>
 
+<canvas id="ripple-canvas" style="position:fixed;top:0;left:0;width:100vw;height:100vh;pointer-events:none;z-index:99999;"></canvas>
+
 <script>
 
 // ─── i18n ───
@@ -1383,6 +1385,99 @@ async function initHeroFallback() {
 
 // Kick off i18n
 applyLang();
+
+// ═══════════════════════════════════════════════════════
+//  Click Ripple — WebGL water-ring overlay
+// ═══════════════════════════════════════════════════════
+(function() {
+  const RIPPLE = { speed:0.6, frequency:35, amplitude:2.1, decay:0.9, thickness:1.4, opacity:0.35 };
+  const rc = document.getElementById('ripple-canvas');
+  const rgl = rc.getContext('webgl', { alpha: true, premultipliedAlpha: false });
+  if (!rgl) return;
+
+  const RVS = `attribute vec2 aPos; void main(){ gl_Position = vec4(aPos,0.0,1.0); }`;
+  const RFS = `
+precision mediump float;
+uniform vec2  uRes;
+uniform float uTime;
+uniform vec3  uRip[8];
+uniform float uSpd, uFreq, uAmp, uDec, uThk, uOpa;
+void main(){
+  vec2 uv = gl_FragCoord.xy / uRes;
+  float asp = uRes.x / uRes.y;
+  float a = 0.0;
+  for(int i=0;i<8;i++){
+    if(uRip[i].z<0.0) continue;
+    float age = uTime - uRip[i].z;
+    if(age<0.0||age>4.0) continue;
+    vec2 d = uv - uRip[i].xy;
+    d.x *= asp;
+    float dist = length(d);
+    float rad = age * uSpd * 0.35;
+    float rd = abs(dist - rad);
+    float ring = exp(-rd*rd/(uThk*uThk*0.01));
+    float w = 0.5+0.5*cos(dist*uFreq - age*uSpd*8.0);
+    a += ring * w * uAmp * exp(-age*uDec);
+  }
+  a = clamp(a,0.0,1.0)*uOpa;
+  gl_FragColor = vec4(1.0,1.0,1.0,a);
+}`;
+
+  function cs(src,t){ const s=rgl.createShader(t); rgl.shaderSource(s,src); rgl.compileShader(s); return s; }
+  const rp = rgl.createProgram();
+  rgl.attachShader(rp, cs(RVS, rgl.VERTEX_SHADER));
+  rgl.attachShader(rp, cs(RFS, rgl.FRAGMENT_SHADER));
+  rgl.linkProgram(rp); rgl.useProgram(rp);
+
+  const rb = rgl.createBuffer();
+  rgl.bindBuffer(rgl.ARRAY_BUFFER, rb);
+  rgl.bufferData(rgl.ARRAY_BUFFER, new Float32Array([-1,-1,1,-1,-1,1,-1,1,1,-1,1,1]), rgl.STATIC_DRAW);
+  const ra = rgl.getAttribLocation(rp,'aPos');
+  rgl.enableVertexAttribArray(ra);
+  rgl.vertexAttribPointer(ra,2,rgl.FLOAT,false,0,0);
+
+  const ul = (n) => rgl.getUniformLocation(rp, n);
+  const uRes=ul('uRes'), uTime=ul('uTime'), uSpd=ul('uSpd'), uFreq=ul('uFreq');
+  const uAmp=ul('uAmp'), uDec=ul('uDec'), uThk=ul('uThk'), uOpa=ul('uOpa');
+  const uRip=[]; for(let i=0;i<8;i++) uRip.push(ul(`uRip[${i}]`));
+
+  const rips = Array.from({length:8},()=>({x:0,y:0,b:-1}));
+  let ri = 0;
+  const t0 = performance.now()/1000;
+
+  function rsz(){
+    const d=Math.min(devicePixelRatio,2);
+    rc.width=innerWidth*d; rc.height=innerHeight*d;
+    rc.style.width=innerWidth+'px'; rc.style.height=innerHeight+'px';
+    rgl.viewport(0,0,rc.width,rc.height);
+  }
+  rsz(); addEventListener('resize', rsz);
+
+  document.addEventListener('click', (e) => {
+    rips[ri] = { x: e.clientX/innerWidth, y: 1-e.clientY/innerHeight, b: performance.now()/1000-t0 };
+    ri = (ri+1) % 8;
+  });
+
+  rgl.enable(rgl.BLEND);
+  rgl.blendFunc(rgl.SRC_ALPHA, rgl.ONE_MINUS_SRC_ALPHA);
+
+  (function loop(){
+    const now = performance.now()/1000-t0;
+    rgl.clearColor(0,0,0,0);
+    rgl.clear(rgl.COLOR_BUFFER_BIT);
+    rgl.uniform2f(uRes, rc.width, rc.height);
+    rgl.uniform1f(uTime, now);
+    rgl.uniform1f(uSpd, RIPPLE.speed);
+    rgl.uniform1f(uFreq, RIPPLE.frequency);
+    rgl.uniform1f(uAmp, RIPPLE.amplitude);
+    rgl.uniform1f(uDec, RIPPLE.decay);
+    rgl.uniform1f(uThk, RIPPLE.thickness);
+    rgl.uniform1f(uOpa, RIPPLE.opacity);
+    for(let i=0;i<8;i++) rgl.uniform3f(uRip[i], rips[i].x, rips[i].y, rips[i].b);
+    rgl.drawArrays(rgl.TRIANGLES, 0, 6);
+    requestAnimationFrame(loop);
+  })();
+})();
 </script>
 </body>
 </html>
