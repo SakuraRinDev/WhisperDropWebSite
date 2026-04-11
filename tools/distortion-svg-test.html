@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SVG feDisplacementMap Ripple Test</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #0e0e14; color: #e8e4dc; font-family: 'Cormorant Garamond', Georgia, serif; }
+
+#page-wrapper { min-height: 200vh; }
+.content { max-width: 900px; margin: 0 auto; padding: 60px 40px; }
+h1 { font-size: 3rem; font-weight: 300; margin-bottom: 0.5rem; }
+h2 { font-size: 1.8rem; margin: 2.5rem 0 1rem; font-weight: 400; color: #c8b888; }
+p { font-size: 1.1rem; line-height: 1.8; margin-bottom: 1.5rem; opacity: 0.85; }
+.hero-img { width: 100%; border-radius: 12px; margin: 30px 0; display: block; }
+.card {
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 12px; padding: 32px; margin: 24px 0;
+}
+.philosophy {
+  text-align: center; font-style: italic; font-size: 1.4rem;
+  padding: 60px 20px; line-height: 1.7;
+}
+button {
+  padding: 12px 32px; background: rgba(200,184,136,0.15);
+  border: 1px solid rgba(200,184,136,0.4); color: #e8e4dc;
+  font-family: inherit; font-size: 1rem; border-radius: 8px;
+  cursor: pointer; margin: 8px 8px 8px 0;
+}
+
+/* Ripple circle — expands from click, only this area is filtered */
+.ripple-circle {
+  position: fixed;
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: 99998;
+  filter: url(#ripple-distort);
+  /* backdrop-filter won't work with SVG filters cross-browser,
+     so we use a trick: this element has the same background
+     and the filter distorts it */
+  mix-blend-mode: normal;
+}
+
+#hud {
+  position: fixed; top: 10px; right: 10px; z-index: 100000;
+  background: rgba(0,0,0,0.88); color: #fff;
+  padding: 16px 20px; border-radius: 8px;
+  font: 13px/1.7 monospace; min-width: 280px;
+}
+#hud label { display: flex; align-items: center; gap: 8px; margin: 3px 0; }
+#hud label span:first-child { width: 110px; }
+#hud label input { flex: 1; }
+#hud label span:last-child { width: 55px; text-align: right; }
+</style>
+</head>
+<body>
+
+<!-- SVG Filter -->
+<svg xmlns="http://www.w3.org/2000/svg" style="position:absolute;width:0;height:0;">
+  <filter id="ripple-distort" x="-10%" y="-10%" width="120%" height="120%">
+    <feTurbulence id="turb" type="turbulence"
+      baseFrequency="0.02" numOctaves="3" seed="1" result="noise"/>
+    <feDisplacementMap id="displace" in="SourceGraphic" in2="noise"
+      scale="0" xChannelSelector="R" yChannelSelector="G"/>
+  </filter>
+</svg>
+
+<div id="hud">
+  <div style="margin-bottom:8px;font-weight:bold;color:#c8b888;">Distortion Settings</div>
+  <div style="margin-bottom:8px;font-size:11px;color:#999;">方式: SVG feDisplacementMap（ラッパーに直接適用）</div>
+</div>
+
+<div id="page-wrapper">
+  <div class="content">
+    <h1>SVG Displacement Test</h1>
+    <p>画面をクリックすると、クリック位置を中心に波紋状のディストーションが発生します。</p>
+
+    <img class="hero-img" src="../hero.png">
+
+    <h2>Section I — テキストも歪む</h2>
+    <div class="card">
+      <p>SVG feDisplacementMap をページラッパーに直接適用。html2canvasなし、キャプチャなし。テキストもカードも画像もすべてリアルタイムで歪む。</p>
+      <button>Sample Button</button>
+      <button>Another Button</button>
+    </div>
+
+    <div class="philosophy">
+      言葉は、思考の最も近くにある道具である。<br>
+      だからこそ、より澄んだ、美しい表現へと紡ぎたい。
+    </div>
+
+    <h2>Section II</h2>
+    <div class="card">
+      <p>波紋はクリック位置から放射状に広がり、通過したテキストや画像が一時的に揺らぎます。</p>
+    </div>
+
+    <h2>Section III</h2>
+    <p>Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.</p>
+    <div class="card"><p>スクロールしても効果が正しく表示されるか確認してください。</p></div>
+  </div>
+</div>
+
+<script>
+const CONFIG = {
+  peakScale:     30,
+  duration:      600,
+  baseFrequency: 0.02,
+  numOctaves:    3,
+};
+
+const wrapper   = document.getElementById('page-wrapper');
+const turb      = document.getElementById('turb');
+const displace  = document.getElementById('displace');
+
+let animId = null;
+
+document.addEventListener('click', (e) => {
+  if (e.target.closest('#hud')) return;
+  if (animId) cancelAnimationFrame(animId);
+
+  // Randomize turbulence pattern for variety
+  turb.setAttribute('seed', String(Math.floor(Math.random() * 999)));
+  turb.setAttribute('baseFrequency', String(CONFIG.baseFrequency));
+  turb.setAttribute('numOctaves', String(CONFIG.numOctaves));
+
+  wrapper.style.filter = 'url(#ripple-distort)';
+  const start = performance.now();
+
+  function tick() {
+    const elapsed = performance.now() - start;
+    const t = elapsed / CONFIG.duration;
+
+    if (t >= 1) {
+      displace.setAttribute('scale', '0');
+      wrapper.style.filter = 'none';
+      animId = null;
+      return;
+    }
+
+    // Quick attack, slow decay envelope
+    const envelope = t < 0.15
+      ? t / 0.15                           // ramp up (0→1 in 15%)
+      : Math.pow(1 - (t - 0.15) / 0.85, 2); // quadratic decay
+
+    displace.setAttribute('scale', String(CONFIG.peakScale * envelope));
+    animId = requestAnimationFrame(tick);
+  }
+  tick();
+});
+
+// ── HUD ──
+(function() {
+  const hud = document.getElementById('hud');
+  const params = [
+    { key: 'peakScale',     min: 5,     max: 80,    step: 1 },
+    { key: 'duration',      min: 200,   max: 2000,  step: 50 },
+    { key: 'baseFrequency', min: 0.005, max: 0.08,  step: 0.001 },
+    { key: 'numOctaves',    min: 1,     max: 6,     step: 1 },
+  ];
+  params.forEach(p => {
+    const label = document.createElement('label');
+    const name = document.createElement('span');
+    name.textContent = p.key;
+    const input = document.createElement('input');
+    input.type = 'range'; input.min = p.min; input.max = p.max; input.step = p.step;
+    input.value = CONFIG[p.key];
+    const val = document.createElement('span');
+    val.textContent = CONFIG[p.key];
+    input.oninput = () => {
+      CONFIG[p.key] = parseFloat(input.value);
+      val.textContent = input.value;
+    };
+    label.append(name, input, val);
+    hud.appendChild(label);
+  });
+  const btn = document.createElement('button');
+  btn.textContent = 'Copy Settings';
+  btn.style.cssText = 'margin-top:10px;padding:4px 12px;font:12px monospace;cursor:pointer;background:#333;border:1px solid #666;color:#fff;border-radius:4px;';
+  btn.onclick = () => {
+    const out = {}; params.forEach(p => out[p.key] = CONFIG[p.key]);
+    navigator.clipboard.writeText(JSON.stringify(out, null, 2));
+    btn.textContent = 'Copied!'; setTimeout(() => btn.textContent = 'Copy Settings', 1500);
+  };
+  hud.appendChild(btn);
+})();
+</script>
+</body>
+</html>

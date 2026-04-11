@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Water Ripple Shader Test</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #0e0e14;
+  color: #e8e4dc;
+  font-family: 'Cormorant Garamond', Georgia, serif;
+  min-height: 200vh;
+  overflow-x: hidden;
+}
+#ripple-canvas {
+  position: fixed;
+  top: 0; left: 0;
+  width: 100vw; height: 100vh;
+  pointer-events: none;
+  z-index: 99999;
+}
+.content {
+  position: relative; z-index: 1;
+  max-width: 800px; margin: 0 auto; padding: 80px 40px;
+}
+h1 { font-size: 3rem; margin-bottom: 1rem; font-weight: 300; }
+h2 { font-size: 1.8rem; margin: 3rem 0 1rem; font-weight: 400; color: #c8b888; }
+p { font-size: 1.1rem; line-height: 1.8; margin-bottom: 1.5rem; opacity: 0.85; }
+.card {
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 12px; padding: 32px; margin: 24px 0;
+  backdrop-filter: blur(8px);
+}
+button {
+  padding: 12px 32px; background: rgba(200,184,136,0.15);
+  border: 1px solid rgba(200,184,136,0.4); color: #e8e4dc;
+  font-family: inherit; font-size: 1rem; border-radius: 8px;
+  cursor: pointer; margin: 8px 8px 8px 0; transition: background 0.3s;
+}
+button:hover { background: rgba(200,184,136,0.3); }
+#hud {
+  position: fixed; top: 10px; right: 10px; z-index: 100000;
+  background: rgba(0,0,0,0.88); color: #fff;
+  padding: 16px 20px; border-radius: 8px;
+  font: 13px/1.7 monospace; min-width: 280px;
+}
+#hud label { display: flex; align-items: center; gap: 8px; margin: 3px 0; }
+#hud label span:first-child { width: 110px; }
+#hud label input { flex: 1; }
+#hud label span:last-child { width: 55px; text-align: right; }
+</style>
+</head>
+<body>
+
+<canvas id="ripple-canvas"></canvas>
+
+<div id="hud">
+  <div style="margin-bottom:8px;font-weight:bold;color:#c8b888;">Ripple Settings</div>
+</div>
+
+<div class="content">
+  <h1>Water Ripple Test</h1>
+  <p>画面のどこかをクリックすると、水の波紋エフェクトが発生します。右上のスライダーで調整してください。</p>
+  <h2>Section I</h2>
+  <div class="card">
+    <p>Click anywhere on the page to see the ripple effect overlay. The shader renders concentric rings that fade out over time.</p>
+    <button>Sample Button</button>
+    <button>Another Button</button>
+  </div>
+  <h2>Section II</h2>
+  <div class="card">
+    <p>The ripple effect uses a full-screen WebGL overlay with pointer-events: none, so it doesn't interfere with any page interactions. Multiple ripples can overlap.</p>
+  </div>
+  <h2>Section III</h2>
+  <p>Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.</p>
+  <div class="card"><p>スクロールしても効果が正しく表示されるか確認してください。</p></div>
+</div>
+
+<script>
+const CONFIG = {
+  speed:         1,
+  frequency:     40,
+  amplitude:     1.5,
+  decay:         1,
+  thickness:     0.8,
+  opacity:       0.5,
+};
+
+const canvas = document.getElementById('ripple-canvas');
+const gl = canvas.getContext('webgl', { alpha: true, premultipliedAlpha: false });
+
+const VS = `
+attribute vec2 aPos;
+void main() { gl_Position = vec4(aPos, 0.0, 1.0); }
+`;
+
+const FS = `
+precision mediump float;
+uniform vec2  uResolution;
+uniform float uTime;
+uniform vec3  uRipples[8];
+uniform float uSpeed;
+uniform float uFrequency;
+uniform float uAmplitude;
+uniform float uDecay;
+uniform float uThickness;
+uniform float uOpacity;
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / uResolution;
+  float aspect = uResolution.x / uResolution.y;
+  float totalAlpha = 0.0;
+
+  for (int i = 0; i < 8; i++) {
+    if (uRipples[i].z < 0.0) continue;
+    float age = uTime - uRipples[i].z;
+    if (age < 0.0 || age > 4.0) continue;
+
+    vec2 diff = uv - uRipples[i].xy;
+    diff.x *= aspect;
+    float dist = length(diff);
+
+    // Expanding ring: the wavefront moves outward
+    float radius = age * uSpeed * 0.35;
+    // Distance from the ring edge
+    float ringDist = abs(dist - radius);
+    // Ring sharpness
+    float ring = exp(-ringDist * ringDist / (uThickness * uThickness * 0.01));
+    // Concentric sub-rings via cosine
+    float waves = 0.5 + 0.5 * cos(dist * uFrequency - age * uSpeed * 8.0);
+    // Combine
+    float ripple = ring * waves * uAmplitude;
+    // Fade over time
+    ripple *= exp(-age * uDecay);
+
+    totalAlpha += ripple;
+  }
+
+  totalAlpha = clamp(totalAlpha, 0.0, 1.0) * uOpacity;
+  gl_FragColor = vec4(1.0, 1.0, 1.0, totalAlpha);
+}
+`;
+
+function compileShader(src, type) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS))
+    console.error(gl.getShaderInfoLog(s));
+  return s;
+}
+
+const prog = gl.createProgram();
+gl.attachShader(prog, compileShader(VS, gl.VERTEX_SHADER));
+gl.attachShader(prog, compileShader(FS, gl.FRAGMENT_SHADER));
+gl.linkProgram(prog);
+gl.useProgram(prog);
+
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), gl.STATIC_DRAW);
+const aPos = gl.getAttribLocation(prog, 'aPos');
+gl.enableVertexAttribArray(aPos);
+gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+const uResolution = gl.getUniformLocation(prog, 'uResolution');
+const uTime       = gl.getUniformLocation(prog, 'uTime');
+const uSpeed      = gl.getUniformLocation(prog, 'uSpeed');
+const uFrequency  = gl.getUniformLocation(prog, 'uFrequency');
+const uAmplitude  = gl.getUniformLocation(prog, 'uAmplitude');
+const uDecay      = gl.getUniformLocation(prog, 'uDecay');
+const uThickness  = gl.getUniformLocation(prog, 'uThickness');
+const uOpacity    = gl.getUniformLocation(prog, 'uOpacity');
+const uRipples    = [];
+for (let i = 0; i < 8; i++) uRipples.push(gl.getUniformLocation(prog, `uRipples[${i}]`));
+
+const ripples = Array.from({length: 8}, () => ({x: 0, y: 0, birth: -1}));
+let rippleIndex = 0;
+const startTime = performance.now() / 1000;
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio, 2);
+  canvas.width  = window.innerWidth  * dpr;
+  canvas.height = window.innerHeight * dpr;
+  canvas.style.width  = window.innerWidth  + 'px';
+  canvas.style.height = window.innerHeight + 'px';
+  gl.viewport(0, 0, canvas.width, canvas.height);
+}
+resize();
+window.addEventListener('resize', resize);
+
+document.addEventListener('click', (e) => {
+  const x = e.clientX / window.innerWidth;
+  const y = 1.0 - (e.clientY / window.innerHeight);
+  const now = performance.now() / 1000 - startTime;
+  ripples[rippleIndex] = { x, y, birth: now };
+  rippleIndex = (rippleIndex + 1) % 8;
+});
+
+gl.enable(gl.BLEND);
+gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+function render() {
+  const now = performance.now() / 1000 - startTime;
+  gl.clearColor(0, 0, 0, 0);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+
+  gl.uniform2f(uResolution, canvas.width, canvas.height);
+  gl.uniform1f(uTime, now);
+  gl.uniform1f(uSpeed, CONFIG.speed);
+  gl.uniform1f(uFrequency, CONFIG.frequency);
+  gl.uniform1f(uAmplitude, CONFIG.amplitude);
+  gl.uniform1f(uDecay, CONFIG.decay);
+  gl.uniform1f(uThickness, CONFIG.thickness);
+  gl.uniform1f(uOpacity, CONFIG.opacity);
+
+  for (let i = 0; i < 8; i++) {
+    gl.uniform3f(uRipples[i], ripples[i].x, ripples[i].y, ripples[i].birth);
+  }
+
+  gl.drawArrays(gl.TRIANGLES, 0, 6);
+  requestAnimationFrame(render);
+}
+render();
+
+// ── HUD ──
+(function() {
+  const hud = document.getElementById('hud');
+  const params = [
+    { key: 'speed',     min: 0.2, max: 5.0,  step: 0.1 },
+    { key: 'frequency', min: 4,   max: 80,   step: 1 },
+    { key: 'amplitude', min: 0.1, max: 5.0,  step: 0.1 },
+    { key: 'decay',     min: 0.3, max: 6.0,  step: 0.1 },
+    { key: 'thickness', min: 0.1, max: 2.0,  step: 0.05 },
+    { key: 'opacity',   min: 0.05,max: 1.0,  step: 0.05 },
+  ];
+  params.forEach(p => {
+    const label = document.createElement('label');
+    const name = document.createElement('span');
+    name.textContent = p.key;
+    const input = document.createElement('input');
+    input.type = 'range'; input.min = p.min; input.max = p.max; input.step = p.step;
+    input.value = CONFIG[p.key];
+    const val = document.createElement('span');
+    val.textContent = CONFIG[p.key];
+    input.oninput = () => {
+      CONFIG[p.key] = parseFloat(input.value);
+      val.textContent = input.value;
+    };
+    label.append(name, input, val);
+    hud.appendChild(label);
+  });
+  const btn = document.createElement('button');
+  btn.textContent = 'Copy Settings';
+  btn.style.cssText = 'margin-top:10px;padding:4px 12px;font:12px monospace;cursor:pointer;background:#333;border:1px solid #666;color:#fff;border-radius:4px;';
+  btn.onclick = () => {
+    const out = {}; params.forEach(p => out[p.key] = CONFIG[p.key]);
+    navigator.clipboard.writeText(JSON.stringify(out, null, 2));
+    btn.textContent = 'Copied!'; setTimeout(() => btn.textContent = 'Copy Settings', 1500);
+  };
+  hud.appendChild(btn);
+})();
+</script>
+</body>
+</html>

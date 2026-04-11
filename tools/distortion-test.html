@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Click Ripple Distortion Test</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #0e0e14; color: #e8e4dc; font-family: 'Cormorant Garamond', Georgia, serif; }
+
+#page-wrapper { min-height: 200vh; position: relative; }
+#distortion-canvas {
+  position: fixed; top: 0; left: 0;
+  width: 100vw; height: 100vh;
+  z-index: 99998;
+  pointer-events: none;
+  display: none;
+}
+
+.content { max-width: 900px; margin: 0 auto; padding: 60px 40px; }
+h1 { font-size: 3rem; font-weight: 300; margin-bottom: 0.5rem; }
+h2 { font-size: 1.8rem; margin: 2.5rem 0 1rem; font-weight: 400; color: #c8b888; }
+p { font-size: 1.1rem; line-height: 1.8; margin-bottom: 1.5rem; opacity: 0.85; }
+.hero-img { width: 100%; border-radius: 12px; margin: 30px 0; display: block; }
+.card {
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 12px; padding: 32px; margin: 24px 0;
+}
+.philosophy {
+  text-align: center; font-style: italic; font-size: 1.4rem;
+  padding: 60px 20px; line-height: 1.7;
+}
+button {
+  padding: 12px 32px; background: rgba(200,184,136,0.15);
+  border: 1px solid rgba(200,184,136,0.4); color: #e8e4dc;
+  font-family: inherit; font-size: 1rem; border-radius: 8px;
+  cursor: pointer; margin: 8px 8px 8px 0;
+}
+
+#hud {
+  position: fixed; top: 10px; right: 10px; z-index: 100000;
+  background: rgba(0,0,0,0.88); color: #fff;
+  padding: 16px 20px; border-radius: 8px;
+  font: 13px/1.7 monospace; min-width: 280px;
+}
+#hud label { display: flex; align-items: center; gap: 8px; margin: 3px 0; }
+#hud label span:first-child { width: 110px; }
+#hud label input { flex: 1; }
+#hud label span:last-child { width: 55px; text-align: right; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+</head>
+<body>
+
+<canvas id="distortion-canvas"></canvas>
+
+<div id="hud">
+  <div style="margin-bottom:8px;font-weight:bold;color:#c8b888;">Distortion Settings</div>
+</div>
+
+<div id="page-wrapper">
+  <div class="content">
+    <h1>Distortion Test</h1>
+    <p>画面をクリックすると、クリック位置から波紋が広がり、テキスト・画像・カードすべてが歪みます。</p>
+
+    <img class="hero-img" src="../hero.png">
+
+    <h2>Section I — テキストも歪む</h2>
+    <div class="card">
+      <p>html2canvas でページをキャプチャし、WebGL シェーダーでクリック位置から同心円状にディストーション。テキストもカードもすべて歪む。</p>
+      <button>Sample Button</button>
+      <button>Another Button</button>
+    </div>
+
+    <div class="philosophy">
+      言葉は、思考の最も近くにある道具である。<br>
+      だからこそ、より澄んだ、美しい表現へと紡ぎたい。
+    </div>
+
+    <h2>Section II</h2>
+    <div class="card">
+      <p>波紋はクリック位置から放射状に広がり、通過したテキストや画像が一時的に揺らぎます。</p>
+    </div>
+
+    <h2>Section III</h2>
+    <p>Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.</p>
+    <div class="card"><p>スクロールしても効果が正しく表示されるか確認してください。</p></div>
+  </div>
+</div>
+
+<script>
+const CONFIG = {
+  frequency: 35,
+  amplitude: 0.015,
+  speed:     5.0,
+  decay:     1.8,
+  duration:  2.0,  // seconds
+};
+
+const canvas = document.getElementById('distortion-canvas');
+const gl = canvas.getContext('webgl', { alpha: false, premultipliedAlpha: false });
+const wrapper = document.getElementById('page-wrapper');
+
+// ── Shaders ──
+const VS = `
+attribute vec2 aPos;
+varying vec2 vUV;
+void main() {
+  vec2 uv = aPos * 0.5 + 0.5;
+  uv.y = 1.0 - uv.y;  // flip Y — html2canvas origin is top-left, GL is bottom-left
+  vUV = uv;
+  gl_Position = vec4(aPos, 0.0, 1.0);
+}`;
+
+const FS = `
+precision mediump float;
+varying vec2 vUV;
+uniform sampler2D uTex;
+uniform vec2  uClick;
+uniform float uTime;
+uniform float uFreq;
+uniform float uAmp;
+uniform float uSpeed;
+uniform float uDecay;
+uniform float uAspect;
+
+void main() {
+  vec2 uv = vUV;
+  vec2 diff = uv - uClick;
+  diff.x *= uAspect;
+  float dist = length(diff);
+
+  if (dist > 0.001 && uTime > 0.0) {
+    // Expanding ring wavefront
+    float wavefront = uTime * uSpeed * 0.08;
+    float nearFront = exp(-(dist - wavefront) * (dist - wavefront) * 40.0);
+
+    // Sine wave for oscillation
+    float wave = sin(dist * uFreq - uTime * uSpeed);
+
+    // Fade over time
+    float fade = exp(-uTime * uDecay);
+
+    // Displacement along radial direction
+    vec2 dir = normalize(diff);
+    vec2 offset = dir * wave * nearFront * fade * uAmp;
+    uv += offset;
+  }
+
+  // Clamp UV to avoid edge artifacts
+  uv = clamp(uv, 0.0, 1.0);
+  gl_FragColor = texture2D(uTex, uv);
+}`;
+
+function compileShader(src, type) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    console.error('Shader compile error:', gl.getShaderInfoLog(s));
+  }
+  return s;
+}
+
+const prog = gl.createProgram();
+gl.attachShader(prog, compileShader(VS, gl.VERTEX_SHADER));
+gl.attachShader(prog, compileShader(FS, gl.FRAGMENT_SHADER));
+gl.linkProgram(prog);
+gl.useProgram(prog);
+
+// Fullscreen quad
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), gl.STATIC_DRAW);
+const aPos = gl.getAttribLocation(prog, 'aPos');
+gl.enableVertexAttribArray(aPos);
+gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+// Uniforms
+const uTex     = gl.getUniformLocation(prog, 'uTex');
+const uClick   = gl.getUniformLocation(prog, 'uClick');
+const uTime    = gl.getUniformLocation(prog, 'uTime');
+const uFreq    = gl.getUniformLocation(prog, 'uFreq');
+const uAmp     = gl.getUniformLocation(prog, 'uAmp');
+const uSpeed   = gl.getUniformLocation(prog, 'uSpeed');
+const uDecay   = gl.getUniformLocation(prog, 'uDecay');
+const uAspect  = gl.getUniformLocation(prog, 'uAspect');
+
+// Texture
+const tex = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, tex);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+
+let animId = null;
+let capturing = false;
+
+function resize() {
+  canvas.width  = window.innerWidth;
+  canvas.height = window.innerHeight;
+  gl.viewport(0, 0, canvas.width, canvas.height);
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ── Click → capture → distort ──
+document.addEventListener('click', async (e) => {
+  if (e.target.closest('#hud')) return;
+  if (capturing) return;
+
+  const clickX = e.clientX / window.innerWidth;
+  const clickY = e.clientY / window.innerHeight; // same orientation as flipped UV
+
+  capturing = true;
+
+  // Capture current viewport via html2canvas
+  try {
+    const snapshot = await html2canvas(wrapper, {
+      backgroundColor: '#0e0e14',
+      scale: 1,
+      width: window.innerWidth,
+      height: window.innerHeight,
+      x: 0,
+      y: window.scrollY,
+      useCORS: true,
+      logging: false,
+    });
+
+    // Upload snapshot to WebGL texture
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, snapshot);
+
+    // Show WebGL canvas over DOM
+    canvas.style.display = 'block';
+
+    const startTime = performance.now();
+
+    if (animId) cancelAnimationFrame(animId);
+
+    function render() {
+      const elapsed = (performance.now() - startTime) / 1000;
+
+      if (elapsed > CONFIG.duration) {
+        canvas.style.display = 'none';
+        animId = null;
+        capturing = false;
+        return;
+      }
+
+      gl.uniform1i(uTex, 0);
+      gl.uniform2f(uClick, clickX, clickY);
+      gl.uniform1f(uTime, elapsed);
+      gl.uniform1f(uFreq, CONFIG.frequency);
+      gl.uniform1f(uAmp, CONFIG.amplitude);
+      gl.uniform1f(uSpeed, CONFIG.speed);
+      gl.uniform1f(uDecay, CONFIG.decay);
+      gl.uniform1f(uAspect, canvas.width / canvas.height);
+
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+      animId = requestAnimationFrame(render);
+    }
+    render();
+  } catch (err) {
+    console.error('Capture failed:', err);
+    capturing = false;
+  }
+});
+
+// ── HUD ──
+(function() {
+  const hud = document.getElementById('hud');
+  const params = [
+    { key: 'frequency',  min: 10,   max: 80,   step: 1 },
+    { key: 'amplitude',  min: 0.005,max: 0.06, step: 0.001 },
+    { key: 'speed',      min: 1,    max: 15,   step: 0.5 },
+    { key: 'decay',      min: 0.5,  max: 5.0,  step: 0.1 },
+    { key: 'duration',   min: 0.5,  max: 5.0,  step: 0.1 },
+  ];
+  params.forEach(p => {
+    const label = document.createElement('label');
+    const name = document.createElement('span');
+    name.textContent = p.key;
+    const input = document.createElement('input');
+    input.type = 'range'; input.min = p.min; input.max = p.max; input.step = p.step;
+    input.value = CONFIG[p.key];
+    const val = document.createElement('span');
+    val.textContent = CONFIG[p.key];
+    input.oninput = () => {
+      CONFIG[p.key] = parseFloat(input.value);
+      val.textContent = input.value;
+    };
+    label.append(name, input, val);
+    hud.appendChild(label);
+  });
+  const btn = document.createElement('button');
+  btn.textContent = 'Copy Settings';
+  btn.style.cssText = 'margin-top:10px;padding:4px 12px;font:12px monospace;cursor:pointer;background:#333;border:1px solid #666;color:#fff;border-radius:4px;';
+  btn.onclick = () => {
+    const out = {}; params.forEach(p => out[p.key] = CONFIG[p.key]);
+    navigator.clipboard.writeText(JSON.stringify(out, null, 2));
+    btn.textContent = 'Copied!'; setTimeout(() => btn.textContent = 'Copy Settings', 1500);
+  };
+  hud.appendChild(btn);
+})();
+</script>
+</body>
+</html>
