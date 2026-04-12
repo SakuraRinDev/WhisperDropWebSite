@@ -726,6 +726,43 @@ footer {
   font-weight: 300;
 }
 
+/* ─────────────────  BGM TOGGLE  ───────────────── */
+.bgm-toggle {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 90000;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: rgba(20, 20, 28, 0.75);
+  border: 1px solid rgba(200, 184, 136, 0.25);
+  backdrop-filter: blur(12px);
+  color: var(--text-secondary);
+  font-size: 1.2rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.3s, border-color 0.3s, opacity 0.3s;
+  opacity: 0.6;
+}
+.bgm-toggle:hover { opacity: 1; border-color: rgba(200, 184, 136, 0.5); }
+.bgm-toggle.playing { opacity: 0.9; border-color: rgba(200, 184, 136, 0.6); }
+.bgm-toggle .bar {
+  display: inline-block;
+  width: 3px;
+  margin: 0 1.5px;
+  background: currentColor;
+  border-radius: 2px;
+  transition: height 0.3s;
+}
+.bgm-toggle .bar:nth-child(1) { height: 8px; }
+.bgm-toggle .bar:nth-child(2) { height: 14px; }
+.bgm-toggle .bar:nth-child(3) { height: 10px; }
+.bgm-toggle .bar:nth-child(4) { height: 6px; }
+.bgm-toggle:not(.playing) .bar { height: 3px !important; }
+
 @media (max-width: 820px) {
   nav { padding: 16px 20px; gap: 12px; }
   .brand { font-size: 1.1rem; }
@@ -901,9 +938,9 @@ footer {
 
     <div class="feature">
       <div class="feature-number">V.</div>
-      <h3 class="feature-title" data-i18n="f5Title">Waveform Presence</h3>
+      <h3 class="feature-title" data-i18n="f5Title">Textual Grace</h3>
       <p class="feature-desc" data-i18n="f5Desc">
-        A beautiful waveform appears while recording — a quiet visual confirmation that your voice is heard.
+        While recording, press A, S, D, or F to wrap the result in 「」, [], "", or (). Quotes, notes, emphasis, asides — four brackets, one keystroke each.
       </p>
     </div>
 
@@ -960,6 +997,12 @@ footer {
   </div>
 </section>
 
+<!-- ───────── BGM ───────── -->
+<audio id="bgm" loop preload="auto" src="music/Glitch Saint.mp3"></audio>
+<button class="bgm-toggle" id="bgm-toggle" aria-label="Toggle background music" title="BGM">
+  <span class="bar"></span><span class="bar"></span><span class="bar"></span><span class="bar"></span>
+</button>
+
 <!-- ───────── FOOTER ───────── -->
 <footer>
   <div class="footer-brand">WhisperDrop  ✦  <span data-i18n="footerTag">Between voice and text</span></div>
@@ -1000,8 +1043,8 @@ const I18N = {
     f3Desc: 'Claude、OpenAI、あるいはローカル Ollama を選び、口述を自然な文章へと磨き上げる。句読点も、専門用語も。',
     f4Title: 'あなたの語彙',
     f4Desc: '業界用語、人名、固有名詞を登録できるカスタム辞書。使うほどに、あなたの語りかけへ正確に応える。',
-    f5Title: '波形の余韻',
-    f5Desc: '録音中は画面に美しい波形が現れる。声が届いていることを、視覚で確かに知ることができる。',
+    f5Title: '文章美',
+    f5Desc: '録音中にA・S・D・Fキーを一つ押すだけで、文字起こし結果を「」・[]・""・（）で囲める。引用、補足、強調、注釈——意図を一瞬で形にする、四つの括弧。',
     f6Title: '記憶と再訪',
     f6Desc: 'これまでの文字起こしはすべて保存され、いつでも検索・再利用できる。過去の声も、あなたの資産となる。',
     dlEyebrow: 'Download',
@@ -1038,8 +1081,8 @@ const I18N = {
     f3Desc: 'Choose Claude, OpenAI, or a local Ollama model to polish your dictation into natural prose.',
     f4Title: 'Your Vocabulary',
     f4Desc: 'Register jargon, names, and product terms. The more you use it, the better it listens.',
-    f5Title: 'Waveform Presence',
-    f5Desc: 'A beautiful waveform appears while recording — a quiet visual confirmation that your voice is heard.',
+    f5Title: 'Textual Grace',
+    f5Desc: 'While recording, press A, S, D, or F to wrap the result in 「」, [], "", or (). Quotes, notes, emphasis, asides — four brackets, one keystroke each.',
     f6Title: 'Memory & Recall',
     f6Desc: 'Every transcription is saved, searchable, and ready to be reused. Past voices become your archive.',
     dlEyebrow: 'Download',
@@ -1478,6 +1521,40 @@ void main(){
     rgl.drawArrays(rgl.TRIANGLES, 0, 6);
     requestAnimationFrame(loop);
   })();
+})();
+
+// ─── BGM ───
+(function() {
+  const audio = document.getElementById('bgm');
+  const btn   = document.getElementById('bgm-toggle');
+  if (!audio || !btn) return;
+
+  audio.volume = 0.35;
+  let started = false;
+
+  // Autoplay on first user interaction (browsers block autoplay without gesture)
+  function autoStart() {
+    if (started) return;
+    started = true;
+    audio.play().then(() => btn.classList.add('playing')).catch(() => {});
+    document.removeEventListener('click', autoStart);
+    document.removeEventListener('scroll', autoStart);
+    document.removeEventListener('keydown', autoStart);
+  }
+  document.addEventListener('click', autoStart, { once: false });
+  document.addEventListener('scroll', autoStart, { once: false });
+  document.addEventListener('keydown', autoStart, { once: false });
+
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (!started) { autoStart(); return; }
+    if (audio.paused) {
+      audio.play().then(() => btn.classList.add('playing')).catch(() => {});
+    } else {
+      audio.pause();
+      btn.classList.remove('playing');
+    }
+  });
 })();
 
 </script>
