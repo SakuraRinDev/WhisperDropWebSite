@@ -1530,30 +1530,39 @@ void main(){
   if (!audio || !btn) return;
 
   audio.volume = 0.35;
-  let started = false;
+  let playing = false;
 
-  // Autoplay on first user interaction (browsers block autoplay without gesture)
-  function autoStart() {
-    if (started) return;
-    started = true;
-    audio.play().then(() => btn.classList.add('playing')).catch(() => {});
-    document.removeEventListener('click', autoStart);
-    document.removeEventListener('scroll', autoStart);
-    document.removeEventListener('keydown', autoStart);
+  function removeAutoListeners() {
+    document.removeEventListener('click', tryAutoPlay);
+    document.removeEventListener('scroll', tryAutoPlay);
+    document.removeEventListener('keydown', tryAutoPlay);
   }
-  document.addEventListener('click', autoStart, { once: false });
-  document.addEventListener('scroll', autoStart, { once: false });
-  document.addEventListener('keydown', autoStart, { once: false });
+
+  function tryAutoPlay() {
+    if (playing) return;
+    audio.play().then(() => {
+      playing = true;
+      btn.classList.add('playing');
+      removeAutoListeners();
+    }).catch(() => {
+      // play() blocked — keep listeners, retry on next interaction
+    });
+  }
+
+  document.addEventListener('click', tryAutoPlay);
+  document.addEventListener('scroll', tryAutoPlay);
+  document.addEventListener('keydown', tryAutoPlay);
 
   btn.addEventListener('click', (e) => {
     e.stopPropagation();
-    if (!started) { autoStart(); return; }
+    if (!playing) { tryAutoPlay(); return; }
     if (audio.paused) {
       audio.play().then(() => btn.classList.add('playing')).catch(() => {});
     } else {
       audio.pause();
       btn.classList.remove('playing');
     }
+    playing = !audio.paused;
   });
 })();
 
